@@ -1,0 +1,75 @@
+# Triple-Stream Fashion Search Engine Configuration
+
+# Model Configuration
+models:
+  clip_model: "clip-ViT-B-32"
+  blip2_model: "Salesforce/blip2-opt-2.7b"
+
+# Data Configuration
+data:
+  annotations_path: "data/instances_attributes_train2020.json"
+  attributes_path: "data/attributes_train2020.json"
+  images_dir: "data/train"
+  num_images: 2500  # Number of images to process
+
+# ChromaDB Configuration
+chromadb:
+  persist_directory: "./chroma_db"
+  collections:
+    grounded: "grounded_vectors"
+    vibe: "vibe_vectors"
+    visual: "visual_vectors"
+
+# Query Weight Presets
+weight_presets:
+  attribute_specific:  # "bright yellow raincoat"
+    alpha: 0.4  # Grounded (attributes)
+    beta: 0.1   # Vibe (minimal)
+    gamma: 0.5  # Visual (color!)
+    
+  contextual_place:  # "modern office attire"
+    alpha: 0.3
+    beta: 0.6  # Vibe (scene dominates)
+    gamma: 0.1
+    
+  complex_semantic:  # "blue shirt on park bench"
+    alpha: 0.3
+    beta: 0.5  # Vibe (scene + action)
+    gamma: 0.2
+    
+  style_inference:  # "casual weekend city walk"
+    alpha: 0.2
+    beta: 0.7  # Vibe (pure style)
+    gamma: 0.1
+    
+  compositional:  # "red tie + white shirt + formal"
+    alpha: 0.4
+    beta: 0.1
+    gamma: 0.5  # Visual (color composition)
+
+# Query Expansion Rules
+expansion_rules:
+  weekend: "relaxed leisure street casual"
+  professional: "business office formal"
+  park: "outdoor nature green bench"
+  modern: "clean minimalist contemporary"
+  bright yellow: "yellow vibrant sunny golden"
+  red: "crimson scarlet burgundy"
+  blue: "navy azure cobalt"
+  white: "ivory cream off-white"
+
+# Color Extraction Configuration
+color_extraction:
+  kmeans_clusters: 3
+  min_pixels: 50  # Minimum pixels needed for color extraction
+  fallback_color: "neutral"
+
+# BLIP-2 Captioning Configuration
+captioning:
+  prompt: "Describe the environment and style in one sentence. Format: '[setting], [vibe/occasion]'. Examples: 'Indoor office, professional attire' or 'Outdoor park, casual weekend look'. If unclear, say 'neutral setting, everyday wear'."
+  min_unique_settings: 50  # Diversity check threshold
+
+# Retrieval Configuration
+retrieval:
+  top_k: 10
+  query_n_results: 50  # Number of results to fetch per collection
