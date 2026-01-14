@@ -10,7 +10,7 @@ data:
   annotations_path: "data/instances_attributes_train2020.json"
   attributes_path: "data/attributes_train2020.json"
   images_dir: "data/train"
-  num_images: 2500  # Number of images to process
+  num_images: -1  # Number of images to process (-1 for all)
 
 # ChromaDB Configuration
 chromadb:

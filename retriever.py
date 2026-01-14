@@ -13,6 +13,8 @@ import numpy as np
 from typing import List, Tuple, Dict, Optional
 from sentence_transformers import SentenceTransformer
 import chromadb
+        
+from logger import retriever_logger as logger
 
 
 class TripleStreamRetriever:
@@ -32,12 +34,12 @@ class TripleStreamRetriever:
             self.config = yaml.safe_load(f)
         
         # Initialize CLIP model
-        print(f"Loading CLIP model: {self.config['models']['clip_model']}")
+        logger.info(f"Loading CLIP model: {self.config['models']['clip_model']}")
         self.clip_model = SentenceTransformer(self.config['models']['clip_model'])
         
         # Initialize ChromaDB client
         persist_dir = self.config['chromadb']['persist_directory']
-        print(f"Loading ChromaDB from {persist_dir}")
+        logger.info(f"Loading ChromaDB from {persist_dir}")
         self.client = chromadb.PersistentClient(path=persist_dir)
         
         # Load collections
@@ -48,9 +50,9 @@ class TripleStreamRetriever:
             try:
                 self.collections[key] = self.client.get_collection(name)
                 count = self.collections[key].count()
-                print(f"Loaded collection '{name}': {count} vectors")
+                logger.info(f"Loaded collection '{name}': {count} vectors")
             except Exception as e:
-                print(f"Warning: Could not load collection '{name}': {e}")
+                logger.warning(f"Could not load collection '{name}': {e}")
         
         # Load expansion rules
         self.expansion_rules = self.config['expansion_rules']
@@ -136,7 +138,7 @@ class TripleStreamRetriever:
             alpha = weights['alpha']
             beta = weights['beta']
             gamma = weights['gamma']
-            print(f"Using preset '{preset}': α={alpha}, β={beta}, γ={gamma}")
+            logger.info(f"Using preset '{preset}': α={alpha}, β={beta}, γ={gamma}")
         
         # Normalize weights to sum to 1.0
         total = alpha + beta + gamma
@@ -148,7 +150,7 @@ class TripleStreamRetriever:
         if expand:
             query = self.expand_query(query)
             if query != original_query:
-                print(f"Expanded query: '{original_query}' → '{query}'")
+                logger.info(f"Expanded query: '{original_query}' → '{query}'")
         
         # Encode query with CLIP Text Encoder
         query_embedding = self.clip_model.encode(query, convert_to_numpy=True)
@@ -299,32 +301,32 @@ class TripleStreamRetriever:
             results: Results from dynamic_search
             max_text_len: Maximum text length to display
         """
-        print(f"\n{'='*100}")
-        print(f"Query: {query}")
-        print(f"{'='*100}\n")
+        logger.info(f"\n{'='*100}")
+        logger.info(f"Query: {query}")
+        logger.info(f"{'='*100}\n")
         
         for i, (img_id, score, individual_scores) in enumerate(results, 1):
             metadata = self.get_image_metadata(img_id)
             
-            print(f"Rank {i}: Image ID {img_id}")
-            print(f"  Final Score: {score:.4f}")
-            print(f"  Stream Scores: G={individual_scores['grounded']:.3f}, "
+            logger.info(f"Rank {i}: Image ID {img_id}")
+            logger.info(f"  Final Score: {score:.4f}")
+            logger.info(f"  Stream Scores: G={individual_scores['grounded']:.3f}, "
                   f"V={individual_scores['vibe']:.3f}, I={individual_scores['visual']:.3f}")
             
             if 'image_path' in metadata:
-                print(f"  Path: {metadata['image_path']}")
+                logger.info(f"  Path: {metadata['image_path']}")
             
             if 'grounded_text' in metadata:
                 text = metadata['grounded_text']
                 display_text = text[:max_text_len] + "..." if len(text) > max_text_len else text
-                print(f"  Grounded: {display_text}")
+                logger.info(f"  Grounded: {display_text}")
             
             if 'vibe_text' in metadata:
                 text = metadata['vibe_text']
                 display_text = text[:max_text_len] + "..." if len(text) > max_text_len else text
-                print(f"  Vibe: {display_text}")
+                logger.info(f"  Vibe: {display_text}")
             
-            print()
+            logger.info("")
 
 
 def main():

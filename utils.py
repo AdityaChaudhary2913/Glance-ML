@@ -18,6 +18,7 @@ from tqdm import tqdm
 # Add fashionpedia-api to path
 sys.path.insert(0, '/workspace/fashionpedia-api-master')
 from fashionpedia.fp import Fashionpedia
+from logger import utils_logger as logger
 
 
 def closest_color_name(rgb: Tuple[int, int, int]) -> str:
@@ -162,7 +163,7 @@ def extract_dominant_colors(
         return color_names if color_names else ["neutral"]
         
     except Exception as e:
-        print(f"Color extraction failed for {image_path}: {e}")
+        logger.error(f"Color extraction failed for {image_path}: {e}")
         return ["neutral"]
 
 
@@ -180,10 +181,10 @@ def load_fashionpedia_data(
     Returns:
         Tuple of (Fashionpedia object, attributes dict)
     """
-    print("Loading Fashionpedia dataset...")
+    logger.info("Loading Fashionpedia dataset...")
     fp = Fashionpedia(annotations_path)
     
-    print("Loading attribute mappings...")
+    logger.info("Loading attribute mappings...")
     with open(attributes_path, 'r') as f:
         attr_data = json.load(f)
     
@@ -270,7 +271,7 @@ def save_json(data: Dict, filepath: str):
     """Save data to JSON file"""
     with open(filepath, 'w') as f:
         json.dump(data, f, indent=2)
-    print(f"Saved to {filepath}")
+    logger.info(f"Saved to {filepath}")
 
 
 def load_json(filepath: str) -> Dict:

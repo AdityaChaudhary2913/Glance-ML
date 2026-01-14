@@ -13,6 +13,7 @@ from PIL import Image
 from tqdm import tqdm
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
 from utils import load_fashionpedia_data, save_json
+from logger import caption_logger as logger
 
 
 class VibeCaptionGenerator:
@@ -32,7 +33,7 @@ class VibeCaptionGenerator:
             self.config = yaml.safe_load(f)
         
         # Initialize BLIP-2
-        print(f"Loading BLIP-2 model: {self.config['models']['blip2_model']}")
+        logger.info(f"Loading BLIP-2 model: {self.config['models']['blip2_model']}")
         self.processor = Blip2Processor.from_pretrained(self.config['models']['blip2_model'])
         self.model = Blip2ForConditionalGeneration.from_pretrained(
             self.config['models']['blip2_model'],
@@ -42,7 +43,7 @@ class VibeCaptionGenerator:
         # Move to GPU if available
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model.to(self.device)
-        print(f"Using device: {self.device}")
+        logger.info(f"Using device: {self.device}")
         
         # Load Fashionpedia data
         self.fp, _ = load_fashionpedia_data(
@@ -52,7 +53,7 @@ class VibeCaptionGenerator:
         
         # Get caption prompt
         self.prompt = self.config['captioning']['prompt']
-        print(f"\nCaption prompt:\n{self.prompt}\n")
+        logger.info(f"Caption prompt: {self.prompt}")
     
     def generate_caption(self, image_path: str) -> str:
         """Generate a vibe caption for a single image"""
@@ -89,7 +90,7 @@ class VibeCaptionGenerator:
             return caption
             
         except Exception as e:
-            print(f"Warning: Caption generation failed for {image_path}: {e}")
+            logger.warning(f"Caption generation failed for {image_path}: {e}")
             return "neutral setting, everyday wear"
     
     def generate_captions(
@@ -109,9 +110,11 @@ class VibeCaptionGenerator:
         """
         if num_images is None:
             num_images = self.config['data']['num_images']
+            if num_images == -1:
+                num_images = len(self.fp.getImgIds())
         
-        print(f"\n=== Generating Vibe Captions ===")
-        print(f"Target: {num_images} images")
+        logger.info("=== Generating Vibe Captions ===")
+        logger.info(f"Target: {num_images} images")
         
         # Get image IDs
         all_img_ids = self.fp.getImgIds()
@@ -126,7 +129,7 @@ class VibeCaptionGenerator:
             img_path = os.path.join(self.config['data']['images_dir'], img_filename)
             
             if not os.path.exists(img_path):
-                print(f"Warning: Image not found: {img_path}")
+                logger.warning(f"Image not found: {img_path}")
                 continue
             
             # Generate caption
@@ -135,22 +138,22 @@ class VibeCaptionGenerator:
         
         # Diversity check
         unique_settings = len(set([c.split(',')[0].strip() for c in captions.values()]))
-        print(f"\nDiversity check: {unique_settings} unique settings out of {len(captions)} captions")
+        logger.info(f"Diversity check: {unique_settings} unique settings out of {len(captions)} captions")
         
         min_unique = self.config['captioning']['min_unique_settings']
         if unique_settings < min_unique:
-            print(f"Warning: Low diversity (< {min_unique} unique settings)")
-            print("Consider adjusting the prompt or increasing image diversity")
+            logger.warning(f"Low diversity (< {min_unique} unique settings)")
+            logger.warning("Consider adjusting the prompt or increasing image diversity")
         else:
-            print(f"✓ Good diversity (>= {min_unique} unique settings)")
+            logger.info(f"✓ Good diversity (>= {min_unique} unique settings)")
         
         # Save captions
         save_json(captions, output_path)
         
         # Print sample captions
-        print("\nSample captions:")
+        logger.info("Sample captions:")
         for i, (img_id, caption) in enumerate(list(captions.items())[:5]):
-            print(f"  {img_id}: {caption}")
+            logger.info(f"  {img_id}: {caption}")
         
         return captions
 

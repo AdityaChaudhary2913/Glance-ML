@@ -27,6 +27,7 @@ from utils import (
     save_json,
     load_json
 )
+from logger import indexer_logger as logger
 
 
 class MultiStreamIndexer:
@@ -46,14 +47,14 @@ class MultiStreamIndexer:
             self.config = yaml.safe_load(f)
         
         # Initialize CLIP model
-        print(f"Loading CLIP model: {self.config['models']['clip_model']}")
+        logger.info(f"Loading CLIP model: {self.config['models']['clip_model']}")
         self.clip_model = SentenceTransformer(self.config['models']['clip_model'])
         
         # Initialize ChromaDB client
         persist_dir = self.config['chromadb']['persist_directory']
         ensure_dir(persist_dir)
         
-        print(f"Initializing ChromaDB at {persist_dir}")
+        logger.info(f"Initializing ChromaDB at {persist_dir}")
         self.client = chromadb.PersistentClient(path=persist_dir)
         
         # Create collections (delete if exists for fresh start)
@@ -66,7 +67,7 @@ class MultiStreamIndexer:
             except:
                 pass
             self.collections[key] = self.client.create_collection(name)
-            print(f"Created collection: {name}")
+            logger.info(f"Created collection: {name}")
         
         # Load Fashionpedia data
         self.fp, self.attr_data = load_fashionpedia_data(
@@ -125,7 +126,7 @@ class MultiStreamIndexer:
         Returns:
             Dictionary mapping image_id to grounded string
         """
-        print("\n=== Generating Grounded Layer (V_fact) ===")
+        logger.info("=== Generating Grounded Layer (V_fact) ===")
         grounded_data = {}
         
         for img_id in tqdm(image_ids, desc="Processing grounded strings"):
@@ -168,7 +169,7 @@ class MultiStreamIndexer:
         Args:
             grounded_data: Dictionary from generate_grounded_vectors
         """
-        print("\n=== Indexing Grounded Layer ===")
+        logger.info("=== Indexing Grounded Layer ===")
         
         image_ids = []
         texts = []
@@ -185,7 +186,7 @@ class MultiStreamIndexer:
             })
         
         # Encode with CLIP Text Encoder
-        print("Encoding grounded strings with CLIP...")
+        logger.info("Encoding grounded strings with CLIP...")
         embeddings = self.clip_model.encode(
             texts,
             show_progress_bar=True,
@@ -193,14 +194,14 @@ class MultiStreamIndexer:
         )
         
         # Store in ChromaDB
-        print("Storing in ChromaDB...")
+        logger.info("Storing in ChromaDB...")
         self.collections['grounded'].add(
             embeddings=embeddings.tolist(),
             ids=image_ids,
             metadatas=metadatas
         )
         
-        print(f"Indexed {len(image_ids)} grounded vectors")
+        logger.info(f"Indexed {len(image_ids)} grounded vectors")
     
     def index_vibe_layer(self, vibe_captions_path: str = "vibe_captions.json"):
         """
@@ -209,7 +210,7 @@ class MultiStreamIndexer:
         Args:
             vibe_captions_path: Path to vibe captions JSON file
         """
-        print("\n=== Indexing Vibe Layer (V_vibe) ===")
+        logger.info("=== Indexing Vibe Layer (V_vibe) ===")
         
         # Load vibe captions
         vibe_data = load_json(vibe_captions_path)
@@ -232,7 +233,7 @@ class MultiStreamIndexer:
             })
         
         # Encode with CLIP Text Encoder
-        print("Encoding vibe captions with CLIP...")
+        logger.info("Encoding vibe captions with CLIP...")
         embeddings = self.clip_model.encode(
             texts,
             show_progress_bar=True,
@@ -240,14 +241,14 @@ class MultiStreamIndexer:
         )
         
         # Store in ChromaDB
-        print("Storing in ChromaDB...")
+        logger.info("Storing in ChromaDB...")
         self.collections['vibe'].add(
             embeddings=embeddings.tolist(),
             ids=image_ids,
             metadatas=metadatas
         )
         
-        print(f"Indexed {len(image_ids)} vibe vectors")
+        logger.info(f"Indexed {len(image_ids)} vibe vectors")
     
     def index_visual_layer(self, image_ids: List[int]):
         """
@@ -256,7 +257,7 @@ class MultiStreamIndexer:
         Args:
             image_ids: List of image IDs to process
         """
-        print("\n=== Indexing Visual Layer (V_img) ===")
+        logger.info("=== Indexing Visual Layer (V_img) ===")
         
         ids_list = []
         embeddings_list = []
@@ -281,18 +282,18 @@ class MultiStreamIndexer:
                 metadatas.append({'image_path': img_path})
                 
             except Exception as e:
-                print(f"Error processing image {img_id}: {e}")
+                logger.error(f"Error processing image {img_id}: {e}")
                 continue
         
         # Store in ChromaDB
-        print("Storing in ChromaDB...")
+        logger.info("Storing in ChromaDB...")
         self.collections['visual'].add(
             embeddings=embeddings_list,
             ids=ids_list,
             metadatas=metadatas
         )
         
-        print(f"Indexed {len(ids_list)} visual vectors")
+        logger.info(f"Indexed {len(ids_list)} visual vectors")
     
     def build_index(self, num_images: int = None):
         """
@@ -303,13 +304,15 @@ class MultiStreamIndexer:
         """
         if num_images is None:
             num_images = self.config['data']['num_images']
+            if num_images == -1:
+                num_images = len(self.fp.getImgIds())
         
         # Get image IDs
-        print(f"\nSelecting {num_images} images...")
+        logger.info(f"Selecting {num_images} images...")
         all_img_ids = self.fp.getImgIds()
         image_ids = all_img_ids[:num_images]
         
-        print(f"Processing {len(image_ids)} images")
+        logger.info(f"Processing {len(image_ids)} images")
         
         # Step 1: Generate grounded layer
         grounded_data = self.generate_grounded_vectors(image_ids)
@@ -322,17 +325,17 @@ class MultiStreamIndexer:
         if os.path.exists(vibe_path):
             self.index_vibe_layer(vibe_path)
         else:
-            print(f"\nWarning: {vibe_path} not found. Run caption generation first.")
-            print("Skipping vibe layer indexing...")
+            logger.warning(f"{vibe_path} not found. Run caption generation first.")
+            logger.warning("Skipping vibe layer indexing...")
         
         # Step 4: Index visual layer
         self.index_visual_layer(image_ids)
         
-        print("\n=== Indexing Complete ===")
-        print(f"Collections created:")
+        logger.info("=== Indexing Complete ===")
+        logger.info("Collections created:")
         for key, collection in self.collections.items():
             count = collection.count()
-            print(f"  - {key}: {count} vectors")
+            logger.info(f"  - {key}: {count} vectors")
 
 
 def main():

@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
 from retriever import TripleStreamRetriever
+from logger import evaluator_logger as logger
 
 
 class SearchEvaluator:
@@ -67,37 +68,37 @@ class SearchEvaluator:
         # Get vanilla CLIP baseline results
         vanilla_results = self.retriever.vanilla_clip_search(query)
         
-        print(f"\n{'='*100}")
-        print(f"Query: {query}")
-        print(f"Preset: {preset}")
+        logger.info(f"\n{'='*100}")
+        logger.info(f"Query: {query}")
+        logger.info(f"Preset: {preset}")
         weights = self.config['weight_presets'][preset]
-        print(f"Weights: α={weights['alpha']}, β={weights['beta']}, γ={weights['gamma']}")
-        print(f"{'='*100}\n")
+        logger.info(f"Weights: α={weights['alpha']}, β={weights['beta']}, γ={weights['gamma']}")
+        logger.info(f"{'='*100}\n")
         
         # Display results
-        print("=== Triple-Stream Results ===")
+        logger.info("=== Triple-Stream Results ===")
         for i, (img_id, score, individual_scores) in enumerate(results, 1):
             metadata = self.retriever.get_image_metadata(img_id)
             
-            print(f"\nRank {i}: Image ID {img_id}")
-            print(f"  Score: {score:.4f} (G:{individual_scores['grounded']:.2f}, "
+            logger.info(f"\nRank {i}: Image ID {img_id}")
+            logger.info(f"  Score: {score:.4f} (G:{individual_scores['grounded']:.2f}, "
                   f"V:{individual_scores['vibe']:.2f}, I:{individual_scores['visual']:.2f})")
             
             if 'grounded_text' in metadata:
-                print(f"  Grounded: {metadata['grounded_text'][:100]}...")
+                logger.info(f"  Grounded: {metadata['grounded_text'][:100]}...")
             
             if 'vibe_text' in metadata:
-                print(f"  Vibe: {metadata['vibe_text'][:80]}...")
+                logger.info(f"  Vibe: {metadata['vibe_text'][:80]}...")
         
-        print("\n=== Vanilla CLIP Baseline (Top 5) ===")
+        logger.info("\n=== Vanilla CLIP Baseline (Top 5) ===")
         for i, img_id in enumerate(vanilla_results[:5], 1):
-            print(f"Rank {i}: Image ID {img_id}")
+            logger.info(f"Rank {i}: Image ID {img_id}")
         
         # Manual relevance judgment
-        print("\n" + "="*100)
-        print("RELEVANCE JUDGMENT")
-        print("Please review the images and enter relevant ranks.")
-        print("="*100)
+        logger.info("\n" + "="*100)
+        logger.info("RELEVANCE JUDGMENT")
+        logger.info("Please review the images and enter relevant ranks.")
+        logger.info("="*100)
         
         relevant_input = input(f"\nEnter relevant ranks for '{query}' (e.g., 1,2,4,7 or 'skip'): ")
         
@@ -108,9 +109,9 @@ class SearchEvaluator:
             try:
                 relevant_ranks = [int(r.strip()) for r in relevant_input.split(',') if r.strip()]
                 precision_at_10 = len(relevant_ranks) / 10
-                print(f"Precision@10: {precision_at_10:.2f}")
+                logger.info(f"Precision@10: {precision_at_10:.2f}")
             except:
-                print("Invalid input, skipping metric calculation")
+                logger.warning("Invalid input, skipping metric calculation")
         
         return {
             'query': query,
@@ -132,9 +133,9 @@ class SearchEvaluator:
         Returns:
             Dictionary with ablation results
         """
-        print(f"\n{'='*100}")
-        print(f"ABLATION STUDY: {query}")
-        print(f"{'='*100}\n")
+        logger.info(f"\n{'='*100}")
+        logger.info(f"ABLATION STUDY: {query}")
+        logger.info(f"{'='*100}\n")
         
         ablation_configs = {
             "Only Grounded (α=1.0)": {'alpha': 1.0, 'beta': 0.0, 'gamma': 0.0},
@@ -147,7 +148,7 @@ class SearchEvaluator:
         results = {}
         
         for name, weights in ablation_configs.items():
-            print(f"\n--- {name} ---")
+            logger.info(f"\n--- {name} ---")
             
             if weights is None:
                 # Determine best preset based on query type
@@ -172,7 +173,7 @@ class SearchEvaluator:
             
             # Display top 3
             for i, (img_id, score, _) in enumerate(search_results[:3], 1):
-                print(f"  {i}. Image {img_id}: {score:.4f}")
+                logger.info(f"  {i}. Image {img_id}: {score:.4f}")
             
             results[name] = [(img_id, score) for img_id, score, _ in search_results]
         
@@ -225,7 +226,7 @@ class SearchEvaluator:
         
         if output_path:
             plt.savefig(output_path, bbox_inches='tight', dpi=150)
-            print(f"Saved visualization to {output_path}")
+            logger.info(f"Saved visualization to {output_path}")
         else:
             plt.show()
     
@@ -241,9 +242,9 @@ class SearchEvaluator:
         """
         all_results = {}
         
-        print("\n" + "="*100)
-        print("FULL EVALUATION: Triple-Stream Fashion Search")
-        print("="*100)
+        logger.info("\n" + "="*100)
+        logger.info("FULL EVALUATION: Triple-Stream Fashion Search")
+        logger.info("="*100)
         
         for query, preset in self.test_queries:
             # Evaluate query
@@ -258,9 +259,9 @@ class SearchEvaluator:
                 self.visualize_results(query, search_results, output_path)
         
         # Run ablation study on one query
-        print("\n" + "="*100)
-        print("Running Ablation Study")
-        print("="*100)
+        logger.info("\n" + "="*100)
+        logger.info("Running Ablation Study")
+        logger.info("="*100)
         ablation_results = self.ablation_study(self.test_queries[0][0])
         all_results['ablation'] = ablation_results
         
@@ -273,9 +274,9 @@ class SearchEvaluator:
                     serializable_results[key] = value
             json.dump(serializable_results, f, indent=2)
         
-        print("\n" + "="*100)
-        print("Evaluation complete! Results saved to evaluation_results.json")
-        print("="*100)
+        logger.info("\n" + "="*100)
+        logger.info("Evaluation complete! Results saved to evaluation_results.json")
+        logger.info("="*100)
         
         return all_results
     
@@ -286,12 +287,12 @@ class SearchEvaluator:
         Args:
             results: Results from run_full_evaluation
         """
-        print("\n" + "="*100)
-        print("PERFORMANCE COMPARISON: Triple-Stream vs Vanilla CLIP")
-        print("="*100 + "\n")
+        logger.info("\n" + "="*100)
+        logger.info("PERFORMANCE COMPARISON: Triple-Stream vs Vanilla CLIP")
+        logger.info("="*100 + "\n")
         
-        print(f"{'Query Type':<25} {'Triple-Stream P@10':<20} {'CLIP P@10':<15} {'Improvement'}")
-        print("-" * 100)
+        logger.info(f"{'Query Type':<25} {'Triple-Stream P@10':<20} {'CLIP P@10':<15} {'Improvement'}")
+        logger.info("-" * 100)
         
         avg_triple = []
         avg_clip = []
@@ -306,19 +307,19 @@ class SearchEvaluator:
                 
                 improvement = ((triple_p10 - clip_p10) / clip_p10 * 100) if clip_p10 > 0 else 0
                 
-                print(f"{preset:<25} {triple_p10:.2f}{'':<17} {clip_p10:.2f}{'':<12} +{improvement:.1f}%")
+                logger.info(f"{preset:<25} {triple_p10:.2f}{'':<17} {clip_p10:.2f}{'':<12} +{improvement:.1f}%")
                 
                 avg_triple.append(triple_p10)
                 avg_clip.append(clip_p10)
             else:
-                print(f"{preset:<25} {'N/A':<20} {'N/A':<15} {'N/A'}")
+                logger.info(f"{preset:<25} {'N/A':<20} {'N/A':<15} {'N/A'}")
         
         if avg_triple:
-            print("-" * 100)
+            logger.info("-" * 100)
             avg_t = np.mean(avg_triple)
             avg_c = np.mean(avg_clip)
             avg_imp = ((avg_t - avg_c) / avg_c * 100) if avg_c > 0 else 0
-            print(f"{'AVERAGE':<25} {avg_t:.2f}{'':<17} {avg_c:.2f}{'':<12} +{avg_imp:.1f}%")
+            logger.info(f"{'AVERAGE':<25} {avg_t:.2f}{'':<17} {avg_c:.2f}{'':<12} +{avg_imp:.1f}%")
 
 
 def main():
