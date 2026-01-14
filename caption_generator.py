@@ -96,14 +96,18 @@ class VibeCaptionGenerator:
     def generate_captions(
         self,
         num_images: int = None,
-        output_path: str = "vibe_captions.json"
+        output_path: str = "vibe_captions.json",
+        checkpoint_interval: int = 500,
+        resume: bool = True
     ) -> dict:
         """
-        Generate vibe captions for multiple images
+        Generate vibe captions for multiple images with CHECKPOINTING
         
         Args:
             num_images: Number of images to process (None = use config)
             output_path: Path to save captions JSON
+            checkpoint_interval: Save progress every N images
+            resume: Whether to resume from existing checkpoint
             
         Returns:
             Dictionary mapping image_id to caption
@@ -115,14 +119,34 @@ class VibeCaptionGenerator:
         
         logger.info("=== Generating Vibe Captions ===")
         logger.info(f"Target: {num_images} images")
+        logger.info(f"Checkpoint interval: every {checkpoint_interval} images")
         
         # Get image IDs
         all_img_ids = self.fp.getImgIds()
         image_ids = all_img_ids[:num_images]
         
+        # Resume from checkpoint if exists
         captions = {}
+        checkpoint_path = output_path.replace('.json', '_checkpoint.json')
         
-        for img_id in tqdm(image_ids, desc="Generating captions"):
+        if resume and os.path.exists(checkpoint_path):
+            try:
+                with open(checkpoint_path, 'r') as f:
+                    captions = json.load(f)
+                logger.info(f"✓ Resumed from checkpoint: {len(captions)} captions already done")
+            except Exception as e:
+                logger.warning(f"Could not load checkpoint: {e}")
+        
+        # Filter out already processed images
+        processed_ids = set(captions.keys())
+        remaining_ids = [img_id for img_id in image_ids if str(img_id) not in processed_ids]
+        
+        if len(remaining_ids) < len(image_ids):
+            logger.info(f"Skipping {len(image_ids) - len(remaining_ids)} already processed images")
+        
+        processed_count = 0
+        
+        for img_id in tqdm(remaining_ids, desc="Generating captions"):
             # Get image path
             img_info = self.fp.loadImgs([img_id])[0]
             img_filename = img_info['file_name']
@@ -135,6 +159,12 @@ class VibeCaptionGenerator:
             # Generate caption
             caption = self.generate_caption(img_path)
             captions[str(img_id)] = caption
+            processed_count += 1
+            
+            # Save checkpoint periodically
+            if processed_count % checkpoint_interval == 0:
+                save_json(captions, checkpoint_path)
+                logger.info(f"✓ Checkpoint saved: {len(captions)} captions")
         
         # Diversity check
         unique_settings = len(set([c.split(',')[0].strip() for c in captions.values()]))
@@ -147,8 +177,13 @@ class VibeCaptionGenerator:
         else:
             logger.info(f"✓ Good diversity (>= {min_unique} unique settings)")
         
-        # Save captions
+        # Save final captions
         save_json(captions, output_path)
+        
+        # Remove checkpoint file after successful completion
+        if os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
+            logger.info(f"✓ Removed checkpoint file (full run completed)")
         
         # Print sample captions
         logger.info("Sample captions:")
