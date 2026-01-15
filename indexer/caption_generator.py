@@ -5,7 +5,6 @@ Generate vibe captions using BLIP-2 for scene and style understanding
 import sys
 import os
 sys.path.insert(0, '/workspace/fashionpedia-api-master')
-# Add parent directory to path for shared modules
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import json
@@ -14,7 +13,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 from typing import List, Dict
-from transformers import AutoProcessor, AutoModelForCausalLM
+from transformers import Blip2Processor, Blip2ForConditionalGeneration
 from shared.utils import (
     load_fashionpedia_data, 
     save_json, 
@@ -47,22 +46,23 @@ class VibeCaptionGenerator:
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
         
-        # Initialize Florence-2
-        logger.info(f"Loading Florence-2 model: {self.config['models']['florence2_model']}")
-        self.processor = AutoProcessor.from_pretrained(
-            self.config['models']['florence2_model'],
-            trust_remote_code=True
-        )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.config['models']['florence2_model'],
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            trust_remote_code=True,
-            attn_implementation="eager"  # Fix for _supports_sdpa issue
-        )
+        # Get caption prompt from config
+        self.caption_prompt = self.config['captioning']['prompt']
         
-        # Move to GPU if available
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model.to(self.device)
+        # Initialize BLIP-2 for more stable captioning
+        logger.info("Loading BLIP-2 model: Salesforce/blip2-opt-2.7b")
+        
+        # Set device and dtype first
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        
+        
+        self.processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
+        self.model = Blip2ForConditionalGeneration.from_pretrained(
+            "Salesforce/blip2-opt-2.7b",
+            torch_dtype=self.torch_dtype
+        ).to(self.device)
+        
         logger.info(f"Using device: {self.device}")
         
         # Get project root and make data paths absolute
@@ -75,10 +75,6 @@ class VibeCaptionGenerator:
         
         # Store project root for later use
         self.project_root = project_root
-        
-        # Get Florence-2 task prompt
-        self.task_prompt = self.config['captioning'].get('task', '<MORE_DETAILED_CAPTION>')
-        logger.info(f"Florence-2 task: {self.task_prompt}")
     
     def generate_grounded_vectors(
         self,
@@ -102,6 +98,9 @@ class VibeCaptionGenerator:
         """
         if output_path is None:
             output_path = os.path.join(self.project_root, "grounded_vectors.json")
+        
+        import time
+        start_time = time.time()
         
         logger.info("\n" + "="*60)
         logger.info("STEP 1: Generating Grounded Vectors (V_fact)")
@@ -172,7 +171,14 @@ class VibeCaptionGenerator:
         
         # Save final
         save_json(grounded_data, output_path)
-        logger.info(f"✓ Saved {len(grounded_data)} grounded vectors to: {output_path}")
+        
+        total_time = time.time() - start_time
+        throughput = len(grounded_data) / total_time if total_time > 0 else 0
+        logger.info(f"\n✓ Grounded vector generation complete:")
+        logger.info(f"  - Total: {len(grounded_data)} vectors")
+        logger.info(f"  - Time: {total_time:.1f}s ({total_time/60:.1f} minutes)")
+        logger.info(f"  - Throughput: {throughput:.2f} images/sec")
+        logger.info(f"  - Output: {output_path}")
         
         # Remove checkpoint
         if os.path.exists(checkpoint_path):
@@ -185,25 +191,26 @@ class VibeCaptionGenerator:
         try:
             image = Image.open(image_path).convert('RGB')
             
-            # Use Florence-2's detailed caption task
-            task_prompt = "<MORE_DETAILED_CAPTION>"
+            # Use BLIP-2 for caption generation
             inputs = self.processor(
-                text=task_prompt,
                 images=image,
+                text=self.caption_prompt,
                 return_tensors="pt"
-            ).to(self.device, torch.float16 if self.device == "cuda" else torch.float32)
+            ).to(self.device, self.torch_dtype)
             
             with torch.no_grad():
                 generated_ids = self.model.generate(
                     **inputs,
                     max_new_tokens=100,
-                    num_beams=3,
-                    early_stopping=True
+                    num_beams=3
                 )
             
-            # Decode and parse caption
-            generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-            caption = self._parse_florence_output(generated_text, task_prompt)
+            # Decode caption
+            caption = self.processor.decode(generated_ids[0], skip_special_tokens=True).strip()
+            
+            # Remove prompt if present (BLIP-2 may echo the prompt)
+            if self.caption_prompt and caption.startswith(self.caption_prompt):
+                caption = caption[len(self.caption_prompt):].strip()
             
             if not caption:
                 return "neutral setting, everyday wear"
@@ -217,63 +224,136 @@ class VibeCaptionGenerator:
     def generate_caption_with_context(self, image_path: str, grounded_str: str) -> str:
         """Generate a vibe caption WITH knowledge of what's in the image
         
+        Uses BLIP-2 to generate scene captions with grounded metadata as context.
+        FIX: Grounded context is now PREPENDED to the prompt, not post-hoc appended.
+        
         Args:
             image_path: Path to the image
             grounded_str: Pre-computed grounded description (from V_fact)
                          Example: "A red blazer with wool. A blue jeans with slim fit."
         
         Returns:
-            Scene and vibe caption grounded in actual garments
+            Scene and vibe caption enriched with compositional grounding
         """
         try:
             image = Image.open(image_path).convert('RGB')
             
-            # Florence-2 detailed caption task - naturally includes scene context
-            task_prompt = "<MORE_DETAILED_CAPTION>"
+            # COMPOSITIONAL GROUNDING FIX: Simplified prompt to avoid overwhelming BLIP-2
+            # Extract just the key items from grounded string (first 2-3 items max)
+            if grounded_str:
+                # Simplify grounded context - take first 2 sentences only
+                grounded_parts = grounded_str.split('. ')[:2]
+                simplified_context = '. '.join(grounded_parts) + '.'
+                # Shorter, clearer prompt format
+                contextualized_prompt = f"Items: {simplified_context} Describe the setting and vibe:"
+            else:
+                contextualized_prompt = "Describe the setting and vibe:"
+            
+            # Use BLIP-2 for caption generation with grounded context
             inputs = self.processor(
-                text=task_prompt,
                 images=image,
+                text=contextualized_prompt,
                 return_tensors="pt"
-            ).to(self.device, torch.float16 if self.device == "cuda" else torch.float32)
+            ).to(self.device, self.torch_dtype)
             
             with torch.no_grad():
                 generated_ids = self.model.generate(
                     **inputs,
-                    max_new_tokens=100,
+                    max_new_tokens=50,  # Shorter output to avoid rambling
                     num_beams=3,
-                    early_stopping=True
+                    repetition_penalty=1.5,  # Penalize repetition
+                    no_repeat_ngram_size=3  # Prevent 3-word phrases from repeating
                 )
             
-            generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-            caption = self._parse_florence_output(generated_text, task_prompt)
+            # Decode caption
+            caption = self.processor.decode(generated_ids[0], skip_special_tokens=True).strip()
             
-            # Florence-2 provides detailed captions naturally
-            # Combine with grounded knowledge for context
-            if caption and grounded_str:
-                # Caption already contains scene + garments from Florence-2
-                # The grounded_str ensures we have accurate garment info
-                return caption
-            elif caption:
-                return caption
+            # ROBUST CLEANING: Remove various forms of prompt echo
+            # Remove the contextualized prompt if echoed
+            if contextualized_prompt and caption.startswith(contextualized_prompt):
+                caption = caption[len(contextualized_prompt):].strip()
+            
+            # Remove common prompt patterns that BLIP-2 might echo
+            patterns_to_remove = [
+                "Items:",
+                "Describe the setting and vibe:",
+                "Context:",
+                "Question:",
+                "Answer:",
+                "Format:",
+                "Examples:",
+                "If unclear, say",
+                "Describe the environment and style"
+            ]
+            
+            for pattern in patterns_to_remove:
+                if pattern in caption:
+                    # Take only the text after the pattern
+                    parts = caption.split(pattern, 1)
+                    if len(parts) > 1:
+                        caption = parts[1].strip()
+            
+            # ENHANCED repetition detection
+            # Split by common delimiters
+            parts = caption.replace(',', '.').split('.')
+            parts = [p.strip() for p in parts if p.strip()]
+            
+            if len(parts) > 2:
+                # Check for repeated phrases
+                seen = {}
+                unique_parts = []
+                for part in parts:
+                    # Normalize whitespace
+                    normalized = ' '.join(part.split())
+                    if normalized and normalized not in seen:
+                        seen[normalized] = True
+                        unique_parts.append(part)
+                
+                # If we removed a lot of repetition, reconstruct
+                if len(unique_parts) < len(parts) * 0.7:  # More than 30% was repetitive
+                    caption = '. '.join(unique_parts[:3])  # Take first 3 unique parts
+                    if caption and not caption.endswith('.'):
+                        caption += '.'
+            
+            # Validate caption quality
+            if not caption or len(caption) < 10:
+                caption = "neutral setting, everyday wear"
+            
+            # Check for nonsensical patterns
+            nonsense_indicators = [
+                "I don't know if this is the right place",
+                "does anyone know if there's a way",
+                "can't seem to get it to work",
+                "trying to get it to work"
+            ]
+            
+            for indicator in nonsense_indicators:
+                if indicator.lower() in caption.lower():
+                    caption = "neutral setting, everyday wear"
+                    break
+            
+            # Return grounded caption with scene description
+            # Format: "Ground truth | Scene: Generated caption"
+            if grounded_str:
+                return f"{grounded_str} | Scene: {caption}"
             else:
-                return "neutral setting, everyday wear"
+                return caption
             
         except Exception as e:
             logger.warning(f"Context-aware caption generation failed for {image_path}: {e}")
             return "neutral setting, everyday wear"
     
-    def generate_captions_batch(self, image_paths: List[str], batch_size: int = 32) -> List[str]:
+    def generate_captions_batch(self, image_paths: List[str], batch_size: int = 8) -> List[str]:
         """Generate vibe captions for a batch of images (legacy method, no context)
         
         Args:
             image_paths: List of image paths to process
-            batch_size: Number of images to process at once (default: 32, Florence-2 is more efficient)
+            batch_size: Number of images to process at once (default: 8 for BLIP-2)
             
         Returns:
             List of captions corresponding to image_paths
         """
         captions = []
-        task_prompt = "<MORE_DETAILED_CAPTION>"
         
         for batch_start in range(0, len(image_paths), batch_size):
             batch_paths = image_paths[batch_start:batch_start + batch_size]
@@ -296,27 +376,29 @@ class VibeCaptionGenerator:
                 continue
             
             try:
-                # Batch process with Florence-2
-                inputs = self.processor(
-                    text=[task_prompt] * len(valid_images),
-                    images=valid_images,
-                    return_tensors="pt",
-                    padding=True
-                ).to(self.device, torch.float16 if self.device == "cuda" else torch.float32)
-                
-                with torch.no_grad():
-                    generated_ids = self.model.generate(
-                        **inputs,
-                        max_new_tokens=100,
-                        num_beams=3,
-                        early_stopping=True
-                    )
-                
-                # Decode all captions
+                # Process images sequentially with BLIP-2
                 batch_captions = []
-                generated_texts = self.processor.batch_decode(generated_ids, skip_special_tokens=False)
-                for gen_text in generated_texts:
-                    caption = self._parse_florence_output(gen_text, task_prompt)
+                
+                for img in valid_images:
+                    inputs = self.processor(
+                        images=img,
+                        text=self.caption_prompt,
+                        return_tensors="pt"
+                    ).to(self.device, self.torch_dtype)
+                    
+                    with torch.no_grad():
+                        generated_ids = self.model.generate(
+                            **inputs,
+                            max_new_tokens=100,
+                            num_beams=3
+                        )
+                    
+                    # Decode caption
+                    caption = self.processor.decode(generated_ids[0], skip_special_tokens=True).strip()
+                    
+                    # Remove prompt if present (BLIP-2 may echo the prompt)
+                    if self.caption_prompt and caption.startswith(self.caption_prompt):
+                        caption = caption[len(self.caption_prompt):].strip()
                     
                     if not caption:
                         caption = "neutral setting, everyday wear"
@@ -342,69 +424,160 @@ class VibeCaptionGenerator:
         self, 
         image_paths: List[str], 
         grounded_strings: List[str],
-        batch_size: int = 32
+        batch_size: int = 8
     ) -> List[str]:
-        """Batch generate captions WITH grounded context (Florence-2 naturally detailed)
+        """Batch generate captions WITH grounded context enrichment
+        
+        Uses BLIP-2 to generate scene captions and enriches them with grounded metadata
         
         Args:
             image_paths: List of image paths
             grounded_strings: List of grounded descriptions (from V_fact)
-            batch_size: Batch size for processing (default: 32, Florence-2 more efficient)
+            batch_size: Batch size for processing (default: 8 for BLIP-2)
         
         Returns:
-            List of contextual vibe captions
+            List of captions enriched with Fashionpedia compositional grounding
         """
         captions = []
-        task_prompt = "<MORE_DETAILED_CAPTION>"
         
         for batch_start in range(0, len(image_paths), batch_size):
             batch_paths = image_paths[batch_start:batch_start + batch_size]
             batch_grounded = grounded_strings[batch_start:batch_start + batch_size]
             batch_images = []
+            valid_grounded = []
             
-            # Load images
-            for img_path in batch_paths:
+            # Load images - ensure no None values slip through
+            for img_path, grounded_str in zip(batch_paths, batch_grounded):
                 try:
                     img = Image.open(img_path).convert('RGB')
-                    batch_images.append(img)
+                    if img is not None:  # Double-check image loaded
+                        batch_images.append(img)
+                        valid_grounded.append(grounded_str if grounded_str else "")
+                    else:
+                        logger.warning(f"Image loaded as None: {img_path}")
+                        batch_images.append(None)
+                        valid_grounded.append(None)
                 except Exception as e:
                     logger.warning(f"Failed to load {img_path}: {e}")
                     batch_images.append(None)
+                    valid_grounded.append(None)
             
-            # Filter valid entries
-            valid_images = [img for img in batch_images if img is not None]
+            # Filter valid entries - CRITICAL: keep ALL valid images
+            # If an image loads but has no grounded string, use empty string (blind captioning fallback)
+            valid_images = []
+            valid_grounded_filtered = []
+            for img, grounded in zip(batch_images, valid_grounded):
+                if img is not None:  # Only check if image is valid
+                    valid_images.append(img)
+                    # Use empty string if grounded is None - enables blind captioning for this image
+                    valid_grounded_filtered.append(grounded if grounded else "")
             
             if not valid_images:
                 captions.extend(["neutral setting, everyday wear"] * len(batch_images))
                 continue
             
+            # Debug: Verify all valid_images are actually PIL Images
+            for idx, img in enumerate(valid_images):
+                if img is None or not hasattr(img, 'size'):
+                    logger.error(f"Invalid image at index {idx}: {type(img)}")
+                    raise ValueError(f"None image found in valid_images at index {idx}")
+            
             try:
-                # Florence-2 naturally generates detailed captions with scene context
+                # Debug: Log what we're about to process
+                logger.debug(f"Processing batch: {len(valid_images)} images, {len(valid_grounded_filtered)} grounded strings")
+                
+                # PARALLEL BATCH PROCESSING FIX: Process all images in batch at once
+                # Build contextualized prompts for each image
+                batch_prompts = []
+                for grounded_str in valid_grounded_filtered:
+                    if grounded_str:
+                        # Simplify grounded context - first 2 sentences only
+                        grounded_parts = grounded_str.split('. ')[:2]
+                        simplified_context = '. '.join(grounded_parts) + '.'
+                        # Shorter, clearer prompt
+                        prompt = f"Items: {simplified_context} Describe the setting and vibe:"
+                    else:
+                        prompt = "Describe the setting and vibe:"
+                    batch_prompts.append(prompt)
+                
+                # Process entire batch in parallel on GPU
                 inputs = self.processor(
-                    text=[task_prompt] * len(valid_images),
                     images=valid_images,
+                    text=batch_prompts,
                     return_tensors="pt",
                     padding=True
-                ).to(self.device, torch.float16 if self.device == "cuda" else torch.float32)
+                ).to(self.device, self.torch_dtype)
                 
                 with torch.no_grad():
                     generated_ids = self.model.generate(
                         **inputs,
-                        max_new_tokens=100,
+                        max_new_tokens=50,  # Shorter to avoid rambling
                         num_beams=3,
-                        early_stopping=True
+                        repetition_penalty=1.5,  # Penalize repetition
+                        no_repeat_ngram_size=3  # Prevent 3-word phrases from repeating
                     )
                 
-                # Decode captions
+                # Decode all captions in batch with robust cleaning
                 batch_captions = []
-                generated_texts = self.processor.batch_decode(generated_ids, skip_special_tokens=False)
-                for gen_text in generated_texts:
-                    caption = self._parse_florence_output(gen_text, task_prompt)
+                for idx, gen_ids in enumerate(generated_ids):
+                    caption = self.processor.decode(gen_ids, skip_special_tokens=True).strip()
                     
-                    if not caption:
+                    # Remove prompt if present
+                    prompt = batch_prompts[idx]
+                    if prompt and caption.startswith(prompt):
+                        caption = caption[len(prompt):].strip()
+                    
+                    # Robust cleaning - remove prompt patterns
+                    patterns_to_remove = [
+                        "Items:", "Describe the setting and vibe:", "Context:",
+                        "Question:", "Answer:", "Format:", "Examples:"
+                    ]
+                    for pattern in patterns_to_remove:
+                        if pattern in caption:
+                            parts = caption.split(pattern, 1)
+                            if len(parts) > 1:
+                                caption = parts[1].strip()
+                    
+                    # ENHANCED repetition detection
+                    parts = caption.replace(',', '.').split('.')
+                    parts = [p.strip() for p in parts if p.strip()]
+                    
+                    if len(parts) > 2:
+                        seen = {}
+                        unique_parts = []
+                        for part in parts:
+                            normalized = ' '.join(part.split())
+                            if normalized and normalized not in seen:
+                                seen[normalized] = True
+                                unique_parts.append(part)
+                        
+                        # If we removed a lot of repetition, reconstruct
+                        if len(unique_parts) < len(parts) * 0.7:
+                            caption = '. '.join(unique_parts[:3])
+                            if caption and not caption.endswith('.'):
+                                caption += '.'
+                    
+                    # Validate and filter nonsense
+                    if not caption or len(caption) < 10:
                         caption = "neutral setting, everyday wear"
                     
-                    batch_captions.append(caption)
+                    nonsense_indicators = [
+                        "I don't know if this is the right place",
+                        "does anyone know if there's a way",
+                        "can't seem to get it to work"
+                    ]
+                    for indicator in nonsense_indicators:
+                        if indicator.lower() in caption.lower():
+                            caption = "neutral setting, everyday wear"
+                            break
+                    
+                    # Format with grounded context
+                    grounded_str = valid_grounded_filtered[idx]
+                    if grounded_str:
+                        enriched_caption = f"{grounded_str} | Scene: {caption}"
+                        batch_captions.append(enriched_caption)
+                    else:
+                        batch_captions.append(caption)
                 
                 # Map back to original batch
                 caption_idx = 0
@@ -416,7 +589,10 @@ class VibeCaptionGenerator:
                         caption_idx += 1
                         
             except Exception as e:
-                logger.warning(f"Batch caption generation with context failed: {e}")
+                logger.error(f"Batch caption generation with context failed: {e}")
+                logger.error(f"  Batch details: {len(batch_images)} total, {len(valid_images)} valid")
+                import traceback
+                logger.error(f"  Traceback: {traceback.format_exc()}")
                 captions.extend(["neutral setting, everyday wear"] * len(batch_images))
         
         return captions
@@ -427,7 +603,7 @@ class VibeCaptionGenerator:
         output_path: str = None,
         checkpoint_interval: int = 500,
         resume: bool = True,
-        batch_size: int = 32,
+        batch_size: int = 8,
         auto_generate_grounded: bool = True
     ) -> dict:
         """
@@ -439,7 +615,7 @@ class VibeCaptionGenerator:
             output_path: Path to save captions JSON (default: project_root/vibe_captions.json)
             checkpoint_interval: Save progress every N images
             resume: Whether to resume from existing checkpoint
-            batch_size: Number of images to process at once (default: 32, Florence-2 more efficient)
+            batch_size: Number of images to process at once (default: 8 for BLIP-2)
             auto_generate_grounded: Whether to auto-generate grounded vectors (default: True)
             
         Returns:
@@ -452,6 +628,9 @@ class VibeCaptionGenerator:
         
         if output_path is None:
             output_path = os.path.join(self.project_root, "vibe_captions.json")
+        
+        import time
+        pipeline_start = time.time()
         
         logger.info("\n" + "="*70)
         logger.info("CAPTION GENERATOR: Context-Aware Vibe Caption Pipeline")
@@ -468,6 +647,7 @@ class VibeCaptionGenerator:
         # Step 1: Generate or load grounded vectors
         grounded_path = os.path.join(self.project_root, "grounded_vectors.json")
         grounded_data = {}
+        stage1_start = time.time()
         
         if auto_generate_grounded:
             if os.path.exists(grounded_path) and resume:
@@ -489,7 +669,10 @@ class VibeCaptionGenerator:
             else:
                 logger.warning("⚠️  No grounded vectors found - falling back to blind captioning")
         
+        stage1_time = time.time() - stage1_start
+        
         # Step 2: Generate context-aware captions
+        stage2_start = time.time()
         logger.info("\n" + "="*60)
         logger.info("STEP 2: Generating Context-Aware Captions (V_vibe)")
         logger.info("="*60)
@@ -517,8 +700,13 @@ class VibeCaptionGenerator:
         if len(remaining_ids) < len(image_ids):
             logger.info(f"Skipping {len(image_ids) - len(remaining_ids)} already processed images")
         
+        # Track batch timing
+        batch_times = []
+        total_batches = (len(remaining_ids) + batch_size - 1) // batch_size
+        
         # Process in batches for speedup
-        for batch_start in tqdm(range(0, len(remaining_ids), batch_size), desc="Generating captions"):
+        for batch_num, batch_start in enumerate(tqdm(range(0, len(remaining_ids), batch_size), desc="Generating captions"), 1):
+            batch_start_time = time.time()
             batch_ids = remaining_ids[batch_start:batch_start + batch_size]
             
             # Collect image paths and grounded strings for this batch
@@ -559,6 +747,19 @@ class VibeCaptionGenerator:
             for img_id, caption in zip(batch_img_ids, batch_captions):
                 captions[str(img_id)] = caption
             
+            # Track batch timing
+            batch_time = time.time() - batch_start_time
+            batch_times.append(batch_time)
+            
+            # Calculate ETA
+            if len(batch_times) >= 3:  # Need at least 3 batches for stable estimate
+                avg_batch_time = sum(batch_times[-10:]) / len(batch_times[-10:])  # Use last 10 batches
+                remaining_batches = total_batches - batch_num
+                eta_seconds = avg_batch_time * remaining_batches
+                
+                if batch_num % 10 == 0:  # Log every 10 batches
+                    logger.info(f"  Batch {batch_num}/{total_batches} - {len(batch_captions)} captions in {batch_time:.1f}s - ETA: {eta_seconds/60:.1f} min")
+            
             # Save checkpoint periodically
             if len(captions) % checkpoint_interval < batch_size:
                 save_json(captions, checkpoint_path)
@@ -578,13 +779,33 @@ class VibeCaptionGenerator:
         # Save final captions
         save_json(captions, output_path)
         
+        # Calculate stage 2 timing
+        stage2_time = time.time() - stage2_start
+        total_pipeline_time = time.time() - pipeline_start
+        
         # Remove checkpoint file after successful completion
         if os.path.exists(checkpoint_path):
             os.remove(checkpoint_path)
             logger.info("✓ Removed checkpoint file (full run completed)")
         
+        # Performance summary
+        logger.info("\n" + "="*60)
+        logger.info("PERFORMANCE SUMMARY")
+        logger.info("="*60)
+        logger.info(f"Stage 1 (Grounded Vectors): {stage1_time:.1f}s ({stage1_time/60:.1f} min)")
+        logger.info(f"Stage 2 (Caption Generation): {stage2_time:.1f}s ({stage2_time/60:.1f} min)")
+        logger.info(f"Total Pipeline Time: {total_pipeline_time:.1f}s ({total_pipeline_time/60:.1f} min)")
+        
+        if len(captions) > 0 and stage2_time > 0:
+            caption_throughput = len(captions) / stage2_time
+            logger.info(f"Caption Throughput: {caption_throughput:.2f} captions/sec")
+            
+            if batch_times:
+                avg_batch_time = sum(batch_times) / len(batch_times)
+                logger.info(f"Average Batch Time: {avg_batch_time:.2f}s ({batch_size/avg_batch_time:.1f} images/sec)")
+        
         # Print sample captions
-        logger.info("Sample captions:")
+        logger.info("\nSample captions:")
         for i, (img_id, caption) in enumerate(list(captions.items())[:5]):
             logger.info(f"  {img_id}: {caption}")
         
@@ -593,6 +814,9 @@ class VibeCaptionGenerator:
 
 def main():
     """Main execution - runs complete caption generation pipeline"""
+    import time
+    main_start = time.time()
+    
     logger.info("="*70)
     logger.info("Starting Self-Contained Caption Generation Pipeline")
     logger.info("="*70)
@@ -607,11 +831,14 @@ def main():
         resume=True  # Resume from checkpoints if interrupted
     )
     
+    total_time = time.time() - main_start
+    
     logger.info("")
     logger.info("="*70)
     logger.info("✓ Caption Generation Pipeline Complete")
     logger.info("="*70)
     logger.info(f"Generated {len(captions)} contextual vibe captions")
+    logger.info(f"Total execution time: {total_time:.1f}s ({total_time/60:.1f} min, {total_time/3600:.2f} hours)")
     logger.info("Output files:")
     logger.info("  - grounded_vectors.json (V_fact metadata)")
     logger.info("  - vibe_captions.json (context-aware captions)")

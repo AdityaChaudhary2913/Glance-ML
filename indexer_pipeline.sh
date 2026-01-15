@@ -21,6 +21,9 @@ fi
 # Activate virtual environment
 source venv/bin/activate
 
+# Create logs directory if it doesn't exist
+mkdir -p "$PROJECT_ROOT/logs"
+
 echo "Running Integrated Pipeline:"
 echo "  Phase 1: Caption Generation (caption_generator.py)"
 echo "    - Generate grounded vectors (V_fact)"

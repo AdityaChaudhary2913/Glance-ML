@@ -238,11 +238,16 @@ class MultiStreamIndexer:
         for img_id, data in grounded_data.items():
             image_ids.append(str(img_id))
             texts.append(data['text'])
+            
+            # Enhanced metadata for multi-attribute filtering and re-ranking
             metadatas.append({
                 'text': data['text'],
                 'image_path': data['image_path'],
+                'image_id': str(img_id),  # Explicit ID for cross-layer joining
                 'categories': json.dumps(data['categories']),
-                'colors': json.dumps(data['colors'])
+                'colors': json.dumps(data['colors']),
+                'layer': 'grounded',  # Layer identifier for query routing
+                'num_garments': len(data['categories'])  # Quick filtering by item count
             })
         
         # Get batch sizes from config
@@ -276,6 +281,19 @@ class MultiStreamIndexer:
         
         total_time = time.time() - start_time
         logger.info(f"✓ Indexed {len(image_ids)} grounded vectors in {total_time:.1f}s")
+        
+        # Save manifest of indexed IDs for cross-layer validation
+        manifest = {
+            'layer': 'grounded',
+            'indexed_ids': image_ids,
+            'count': len(image_ids),
+            'timestamp': time.time()
+        }
+        manifest_path = os.path.join(self.project_root, 'grounded_layer_manifest.json')
+        save_json(manifest, manifest_path)
+        logger.info(f"  Saved ID manifest: {manifest_path}")
+        
+        return image_ids  # Return for consistency tracking
     
     def index_vibe_layer(self, vibe_captions_path: str = "vibe_captions.json", grounded_data: Dict = None):
         """
@@ -310,19 +328,39 @@ class MultiStreamIndexer:
         image_ids = []
         texts = []
         metadatas = []
+        skipped = 0
         
         for img_id, caption in vibe_data.items():
-            image_ids.append(str(img_id))
-            texts.append(caption)
-            
-            # Get image path
-            img_info = self.fp.loadImgs([int(img_id)])[0]
-            img_path = os.path.join(self.project_root, self.config['data']['images_dir'], img_info['file_name'])
-            
-            metadatas.append({
-                'text': caption,
-                'image_path': img_path
-            })
+            try:
+                image_ids.append(str(img_id))
+                texts.append(caption)
+                
+                # Get image path from grounded data if available for consistency
+                if grounded_data and img_id in grounded_data:
+                    img_path = grounded_data[img_id]['image_path']
+                    # Extract scene/vibe part from enriched caption if present
+                    caption_parts = caption.split(' | Scene: ')
+                    vibe_only = caption_parts[1] if len(caption_parts) > 1 else caption
+                else:
+                    img_info = self.fp.loadImgs([int(img_id)])[0]
+                    img_path = os.path.join(self.project_root, self.config['data']['images_dir'], img_info['file_name'])
+                    vibe_only = caption
+                
+                # Enhanced metadata for multi-attribute queries
+                metadatas.append({
+                    'text': caption,  # Full caption with grounding
+                    'vibe_text': vibe_only,  # Scene-only part for vibe-focused queries
+                    'image_path': img_path,
+                    'image_id': str(img_id),  # Explicit ID for cross-layer joining
+                    'layer': 'vibe'  # Layer identifier for query routing
+                })
+            except Exception as e:
+                logger.warning(f"Skipping image {img_id}: {e}")
+                skipped += 1
+                continue
+        
+        if skipped > 0:
+            logger.warning(f"⚠ Skipped {skipped} images due to errors")
         
         # Get batch sizes from config
         encoding_batch = self.config.get('indexing', {}).get('encoding_batch_size', 32)
@@ -355,10 +393,24 @@ class MultiStreamIndexer:
         
         total_time = time.time() - start_time
         logger.info(f"✓ Indexed {len(image_ids)} vibe vectors in {total_time:.1f}s")
+        
+        # Save manifest of indexed IDs for cross-layer validation
+        manifest = {
+            'layer': 'vibe',
+            'indexed_ids': image_ids,
+            'count': len(image_ids),
+            'timestamp': time.time()
+        }
+        manifest_path = os.path.join(self.project_root, 'vibe_layer_manifest.json')
+        save_json(manifest, manifest_path)
+        logger.info(f"  Saved ID manifest: {manifest_path}")
+        
+        return image_ids  # Return for consistency tracking
     
     def index_visual_layer(
         self,
         image_ids: List[int],
+        grounded_data: Dict = None,
         checkpoint_interval: int = None,
         resume: bool = True
     ):
@@ -367,6 +419,7 @@ class MultiStreamIndexer:
         
         Args:
             image_ids: List of image IDs to process
+            grounded_data: Optional grounded data for consistent image paths
             checkpoint_interval: Save progress every N images (None = use config)
             resume: Whether to resume from checkpoint
         """
@@ -415,30 +468,46 @@ class MultiStreamIndexer:
             batch_images = []
             batch_img_ids = []
             batch_metadatas = []
+            batch_failed = []  # Track failures within this batch
             
             for img_id in batch_ids:
                 # Get image path
                 try:
-                    img_info = self.fp.loadImgs([img_id])[0]
-                    img_filename = img_info['file_name']
-                    img_path = os.path.join(self.project_root, self.config['data']['images_dir'], img_filename)
+                    # Use path from grounded_data if available for consistency
+                    if grounded_data and str(img_id) in grounded_data:
+                        img_path = grounded_data[str(img_id)]['image_path']
+                    else:
+                        img_info = self.fp.loadImgs([img_id])[0]
+                        img_filename = img_info['file_name']
+                        img_path = os.path.join(self.project_root, self.config['data']['images_dir'], img_filename)
                     
                     if not os.path.exists(img_path):
-                        failed_ids.append(img_id)
+                        logger.debug(f"Image not found: {img_path}")
+                        batch_failed.append(img_id)
                         continue
                     
                     # Load image
                     img = Image.open(img_path).convert('RGB')
                     batch_images.append(img)
                     batch_img_ids.append(str(img_id))
-                    batch_metadatas.append({'image_path': img_path})
+                    
+                    # Enhanced metadata for multi-layer queries
+                    batch_metadatas.append({
+                        'image_path': img_path,
+                        'image_id': str(img_id),  # Explicit ID for cross-layer joining
+                        'layer': 'visual'  # Layer identifier for query routing
+                    })
                     
                 except Exception as e:
-                    logger.error(f"Error loading image {img_id}: {e}")
-                    failed_ids.append(img_id)
+                    logger.debug(f"Error loading image {img_id}: {e}")
+                    batch_failed.append(img_id)
                     continue
             
+            # Add batch failures to overall failed list
+            failed_ids.extend(batch_failed)
+            
             if not batch_images:
+                logger.debug(f"Batch at {batch_start} had no valid images")
                 continue
             
             try:
@@ -472,11 +541,15 @@ class MultiStreamIndexer:
                 
             except Exception as e:
                 logger.error(f"Batch encoding failed at {batch_start}: {e}")
-                failed_ids.extend([int(i) for i in batch_img_ids])
+                # Mark all images in this batch as failed
+                for img_id_str in batch_img_ids:
+                    img_id_int = int(img_id_str)
+                    if img_id_int not in failed_ids:
+                        failed_ids.append(img_id_int)
         
         # Save failed IDs to file if enabled
         if save_failed and failed_ids:
-            save_json({'failed_ids': failed_ids, 'count': len(failed_ids)}, failed_ids_path)
+            save_json({'failed_ids': list(set(failed_ids)), 'count': len(failed_ids)}, failed_ids_path)
             logger.warning(f"⚠ Saved {len(failed_ids)} failed IDs to: {failed_ids_path}")
         
         # Remove checkpoint after successful completion
@@ -490,6 +563,122 @@ class MultiStreamIndexer:
         
         if failed_ids:
             logger.warning(f"⚠ {len(failed_ids)} images failed to process")
+        
+        # Save manifest of indexed IDs for cross-layer validation
+        successfully_indexed = [img_id for img_id in image_ids if img_id not in failed_ids]
+        manifest = {
+            'layer': 'visual',
+            'indexed_ids': [str(img_id) for img_id in successfully_indexed],
+            'failed_ids': failed_ids,
+            'count': len(successfully_indexed),
+            'failed_count': len(failed_ids),
+            'timestamp': time.time()
+        }
+        manifest_path = os.path.join(self.project_root, 'visual_layer_manifest.json')
+        save_json(manifest, manifest_path)
+        logger.info(f"  Saved ID manifest: {manifest_path}")
+        
+        return successfully_indexed  # Return for consistency tracking
+    
+    def validate_cross_layer_consistency(self) -> Dict:
+        """
+        Validate that all three layers have consistent image IDs
+        Critical for multi-attribute queries that combine layers
+        
+        Returns:
+            Dictionary with validation results and ID coverage statistics
+        """
+        logger.info("\n" + "="*60)
+        logger.info("VALIDATION: Cross-Layer ID Consistency Check")
+        logger.info("="*60)
+        
+        # Get all IDs from each collection
+        grounded_ids = set()
+        vibe_ids = set()
+        visual_ids = set()
+        
+        # Query all IDs from each collection
+        try:
+            grounded_result = self.collections['grounded'].get()
+            grounded_ids = set(grounded_result['ids'])
+            logger.info(f"Grounded layer: {len(grounded_ids)} images")
+        except Exception as e:
+            logger.error(f"Error reading grounded collection: {e}")
+        
+        try:
+            vibe_result = self.collections['vibe'].get()
+            vibe_ids = set(vibe_result['ids'])
+            logger.info(f"Vibe layer: {len(vibe_ids)} images")
+        except Exception as e:
+            logger.error(f"Error reading vibe collection: {e}")
+        
+        try:
+            visual_result = self.collections['visual'].get()
+            visual_ids = set(visual_result['ids'])
+            logger.info(f"Visual layer: {len(visual_ids)} images")
+        except Exception as e:
+            logger.error(f"Error reading visual collection: {e}")
+        
+        # Find common and missing IDs
+        all_ids = grounded_ids | vibe_ids | visual_ids
+        common_ids = grounded_ids & vibe_ids & visual_ids
+        
+        # Calculate coverage
+        coverage_report = {
+            'total_unique_ids': len(all_ids),
+            'common_across_all_layers': len(common_ids),
+            'coverage_percentage': (len(common_ids) / len(all_ids) * 100) if all_ids else 0,
+            'layer_counts': {
+                'grounded': len(grounded_ids),
+                'vibe': len(vibe_ids),
+                'visual': len(visual_ids)
+            },
+            'missing_ids': {
+                'grounded_missing': list(all_ids - grounded_ids)[:10],  # Sample of missing
+                'vibe_missing': list(all_ids - vibe_ids)[:10],
+                'visual_missing': list(all_ids - visual_ids)[:10]
+            },
+            'missing_counts': {
+                'grounded_missing_count': len(all_ids - grounded_ids),
+                'vibe_missing_count': len(all_ids - vibe_ids),
+                'visual_missing_count': len(all_ids - visual_ids)
+            }
+        }
+        
+        # Log results
+        logger.info("\n" + "-"*60)
+        logger.info("CONSISTENCY REPORT")
+        logger.info("-"*60)
+        logger.info(f"Total unique image IDs: {coverage_report['total_unique_ids']}")
+        logger.info(f"IDs present in ALL 3 layers: {coverage_report['common_across_all_layers']}")
+        logger.info(f"Coverage: {coverage_report['coverage_percentage']:.1f}%")
+        
+        # Report missing IDs per layer
+        logger.info("\nMissing IDs per layer:")
+        for layer, count in coverage_report['missing_counts'].items():
+            if count > 0:
+                logger.warning(f"  ⚠ {layer}: {count} images missing")
+            else:
+                logger.info(f"  ✓ {layer}: Complete coverage")
+        
+        # Evaluate consistency
+        if coverage_report['coverage_percentage'] == 100.0:
+            logger.info("\n✓ PERFECT CONSISTENCY: All layers have identical image IDs")
+            logger.info("  Multi-attribute queries will work seamlessly across all layers")
+        elif coverage_report['coverage_percentage'] >= 95.0:
+            logger.info("\n✓ GOOD CONSISTENCY: >95% coverage across all layers")
+            logger.warning("  Some images may not be available for multi-layer queries")
+        else:
+            logger.warning("\n⚠ CONSISTENCY ISSUES: <95% coverage across layers")
+            logger.warning("  Multi-attribute queries may have limited effectiveness")
+            logger.warning("  Consider re-running failed layers or investigating issues")
+        
+        # Save report
+        report_path = os.path.join(self.project_root, 'index_consistency_report.json')
+        save_json(coverage_report, report_path)
+        logger.info(f"\n✓ Full report saved to: {report_path}")
+        
+        return coverage_report
     
     def build_index(self, num_images: int = None):
         """
@@ -531,32 +720,44 @@ class MultiStreamIndexer:
         logger.info("✓ Found vibe_captions.json")
         logger.info("")
         
-        # Get image IDs
-        all_img_ids = self.fp.getImgIds()
-        image_ids = all_img_ids[:num_images]
+        # Load grounded data first to get consistent image IDs
+        grounded_data = load_json(grounded_path)
+        
+        # Get image IDs from grounded data (ensures consistency)
+        image_ids_from_data = [int(img_id) for img_id in grounded_data.keys()]
+        logger.info(f"Found {len(image_ids_from_data)} images in grounded data")
+        
+        # If num_images is specified and less than available, limit it
+        if num_images > 0 and num_images < len(image_ids_from_data):
+            image_ids = image_ids_from_data[:num_images]
+            logger.info(f"Limiting to first {num_images} images")
+        else:
+            image_ids = image_ids_from_data
         
         # Start overall timer
         import time
         pipeline_start = time.time()
         
-        # Load grounded data
+        # Index grounded layer
         logger.info("="*60)
         logger.info("STEP 1/3: Indexing Grounded Layer (V_fact)")
         logger.info("="*60)
-        grounded_data = load_json(grounded_path)
-        self.index_grounded_layer(grounded_data)
+        grounded_indexed_ids = self.index_grounded_layer(grounded_data)
         
         # Index vibe layer with validation
         logger.info("\n" + "="*60)
         logger.info("STEP 2/3: Indexing Vibe Layer (V_vibe)")
         logger.info("="*60)
-        self.index_vibe_layer(vibe_path, grounded_data=grounded_data)
+        vibe_indexed_ids = self.index_vibe_layer(vibe_path, grounded_data=grounded_data)
         
-        # Index visual layer with checkpointing
+        # Index visual layer with checkpointing and grounded data for path consistency
         logger.info("\n" + "="*60)
         logger.info("STEP 3/3: Indexing Visual Layer (V_img)")
         logger.info("="*60)
-        self.index_visual_layer(image_ids)
+        visual_indexed_ids = self.index_visual_layer(image_ids, grounded_data=grounded_data)
+        
+        # CRITICAL: Validate cross-layer ID consistency for multi-attribute queries
+        consistency_report = self.validate_cross_layer_consistency()
         
         pipeline_time = time.time() - pipeline_start
         
@@ -569,8 +770,23 @@ class MultiStreamIndexer:
             count = collection.count()
             logger.info(f"  - {key}: {count} vectors")
         
+        # Display consistency metrics
+        logger.info("\nMulti-Layer Query Readiness:")
+        logger.info(f"  - Cross-layer coverage: {consistency_report['coverage_percentage']:.1f}%")
+        logger.info(f"  - Images in all 3 layers: {consistency_report['common_across_all_layers']}/{consistency_report['total_unique_ids']}")
+        
+        if consistency_report['coverage_percentage'] >= 95.0:
+            logger.info("  ✓ Ready for multi-attribute queries (color + clothing + vibe)")
+        else:
+            logger.warning("  ⚠ Some images missing from certain layers - partial multi-attribute support")
+        
         logger.info("")
         logger.info("Vector database ready at: " + os.path.join(self.project_root, self.config['chromadb']['persist_directory']))
+        logger.info("")
+        logger.info("Important Notes for Retrieval:")
+        logger.info("  1. Use weighted ensemble search across all 3 layers for best results")
+        logger.info("  2. Check index_consistency_report.json for layer coverage details")
+        logger.info("  3. Images with <100% coverage may have limited multi-attribute support")
         logger.info("")
         logger.info("Next step: Run search queries")
         logger.info("  cd retriever && python retriever.py")
