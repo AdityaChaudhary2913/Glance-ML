@@ -43,10 +43,20 @@ The system treats every image as a **three-vector entity**, storing vectors inde
 | Stream | Source | Encoding | Purpose |
 |--------|--------|----------|---------|
 | **V_fact** (Grounded) | Fashionpedia (46 categories, 294 attributes) + K-means color extraction | CLIP Text | Structured fashion knowledge |
-| **V_vibe** (Contextual) | BLIP-2 constrained captions | CLIP Text | Scene/style/occasion inference |
+| **V_vibe** (Contextual) | **Context-aware** BLIP-2 captions using V_fact metadata | CLIP Text | Scene/style/occasion inference with compositional grounding |
 | **V_img** (Visual) | Raw images | CLIP Image | Implicit visual features |
 
 **Core Formula**: `Score = α·S_fact + β·S_vibe + γ·S_img`
+
+### Key Innovation: Context-Aware V_vibe Generation
+
+V_vibe captions are generated WITH knowledge of what's in the image:
+```
+Input to BLIP-2: "The image contains: A red blazer with wool. Blue jeans with slim fit."
+Output: "business casual setting, professional vibe"
+```
+
+This solves compositional binding issues (e.g., "red shirt + blue pants" vs "blue shirt + red pants").
 
 ## Features
 
@@ -100,37 +110,35 @@ cd ..
 ### Quick Start (Test Run - 2500 images)
 
 ```bash
-# Run complete test pipeline (~30 minutes)
-./run_test.sh
+# Run integrated pipeline (~30-40 minutes)
+./indexer_pipeline.sh
 
-# Or manually:
-cd indexer
-python caption_generator.py  # Generates vibe captions
-python indexer.py            # Builds vector index
-
-cd ../retriever
-python retriever.py          # Run test queries
+# Monitor progress
+tail -f logs/caption_run.log  # Phase 1: Caption generation
+tail -f logs/indexer_run.log  # Phase 2: Indexing
 ```
 
 ### Full Dataset Run (45,623 images)
 
 ```bash
-# Automated full pipeline (~14-15 hours)
-./run_full_indexing.sh
-
-# Or manually with checkpointing:
-cd indexer
-
-# Step 1: Generate captions (runs in background)
-nohup python caption_generator.py > ../logs/caption_run.log 2>&1 &
-tail -f ../logs/caption_run.log  # Monitor progress
-
-# Step 2: Build index (after captions complete)
-nohup python indexer.py > ../logs/indexer_run.log 2>&1 &
-tail -f ../logs/indexer_run.log  # Monitor progress
+# Automated two-phase pipeline (~10-12 hours)
+./indexer_pipeline.sh
 ```
 
-**If interrupted**: Simply re-run the same command. Both scripts auto-resume from checkpoints!
+**Pipeline phases:**
+
+**Phase 1: Caption Generation** (~5-8 hours)
+- Generates grounded vectors (V_fact) from Fashionpedia + color extraction
+- Generates context-aware captions (V_vibe) using grounded vectors as context
+- Output: `grounded_vectors.json`, `vibe_captions.json`
+
+**Phase 2: Vector Indexing** (~2-3 hours)
+- Indexes grounded layer (V_fact)
+- Indexes vibe layer (V_vibe)
+- Indexes visual layer (V_img)
+- Output: ChromaDB collections in `chroma_db/`
+
+**If interrupted**: Simply re-run `./indexer_pipeline.sh`. Both phases auto-resume from checkpoints!
 
 ### Search Images
 

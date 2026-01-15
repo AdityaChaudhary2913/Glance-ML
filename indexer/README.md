@@ -1,62 +1,122 @@
 # Indexer Module
 
 ## Overview
-The indexer module processes raw fashion images and builds a searchable triple-stream vector database. It extracts structured fashion knowledge (V_fact), generates scene/style captions (V_vibe), and encodes raw visual features (V_img).
+The indexer module processes raw fashion images and builds a searchable triple-stream vector database. It's split into two phases:
+
+**Phase 1 (caption_generator.py)**: Generates structured fashion knowledge (V_fact) and context-aware scene/style captions (V_vibe)
+**Phase 2 (indexer.py)**: Encodes and indexes all three layers into ChromaDB
+
+## Key Innovation: Context-Aware V_vibe
+
+V_vibe captions are generated WITH knowledge of what's in the image:
+- V_fact generates compositional garment descriptions: "A red blazer with wool. Blue jeans with slim fit."
+- V_vibe uses these as prompts to BLIP-2 for scene understanding
+- Result: Captions that understand compositional binding ("red blazer" + "blue jeans" as separate entities)
 
 ## Components
 
-### 1. `caption_generator.py`
-Generates vibe captions using BLIP-2 for understanding scene context and style.
+### 1. `caption_generator.py` - Self-Contained Caption Pipeline
+Generates BOTH grounded vectors and context-aware captions in one go.
 
 **Key Features:**
-- BLIP-2 constrained prompting for consistent captions
-- Automatic checkpointing every 500 images
+- **Self-contained**: Generates grounded vectors (V_fact) first, then uses them for captioning
+- **Context-aware prompting**: Uses grounded strings as input to BLIP-2
+- BLIP-2 batch processing (8-16 images at once, 5-10x speedup)
+- Automatic checkpointing every 500 images for both grounded and caption generation
 - Auto-resume from checkpoint on failure
 - Diversity validation (>50 unique settings)
+
+**What it generates:**
+1. `grounded_vectors.json` - Compositional garment descriptions (V_fact)
+2. `vibe_captions.json` - Context-aware scene captions (V_vibe)
 
 **Usage:**
 ```bash
 cd indexer
-python caption_generator.py
+python caption_generator.py  # Self-contained: Does everything for caption phase
+
+# Monitor progress
+tail -f ../logs/caption_run.log
 ```
 
-**Output:**
-- `vibe_captions.json`: Image ID → caption mapping
-- `vibe_captions_checkpoint.json`: (temporary, removed on completion)
+**Methods:**
+- `generate_grounded_vectors()`: Creates V_fact from Fashionpedia + color extraction
+- `generate_caption_with_context()`: Single image with grounded context
+- `generate_captions_batch_with_context()`: Batch processing (5-10x faster)
+- `generate_captions()`: Main orchestrator that runs grounded → captions pipeline
 
-### 2. `indexer.py`
-Builds three independent vector collections in ChromaDB.
+### 2. `indexer.py` - Vector Database Builder
+Encodes and indexes pre-generated data into ChromaDB.
 
 **Key Features:**
-- **V_fact (Grounded Layer)**: Fashionpedia annotations + K-means color extraction
-- **V_vibe (Contextual Layer)**: BLIP-2 captions encoded with CLIP Text
-- **V_img (Visual Layer)**: Raw images encoded with CLIP Image
+- **Uses pre-generated data**: Expects `grounded_vectors.json` and `vibe_captions.json` to exist
+- **V_fact (Grounded Layer)**: CLIP text encoding of grounded strings
+- **V_vibe (Contextual Layer)**: CLIP text encoding of context-aware captions
+- **V_img (Visual Layer)**: CLIP image encoding of raw images
 - Batch processing for 3-5x speedup
-- Automatic checkpointing for long runs
 - Batched ChromaDB inserts (5000 vectors at a time)
 
 **Usage:**
 ```bash
 cd indexer
-python indexer.py
+python indexer.py  # Requires caption_generator.py output
+
+# Monitor progress
+tail -f ../logs/indexer_run.log
 ```
 
 **Output:**
-- `chroma_db/`: Persistent ChromaDB with 3 collections
-- `grounded_data.json`: Structured fashion descriptions
-- `grounded_data_checkpoint.json`: (temporary, removed on completion)
+- `chroma_db/`: Persistent ChromaDB with 3 collections (grounded_vectors, vibe_vectors, visual_vectors)
 
 ## Pipeline Execution Order
 
-1. **Generate Vibe Captions First** (slowest: ~6.5 hours for 45K images)
-   ```bash
-   nohup python caption_generator.py > caption_run.log 2>&1 &
-   ```
+**Recommended: Use Automated Script**
+```bash
+./indexer_pipeline.sh  # Runs both phases automatically
+```
 
-2. **Build Vector Index** (after captions are done)
-   ```bash
-   nohup python indexer.py > indexer_run.log 2>&1 &
-   ```
+**Manual Execution (Advanced):**
+```bash
+# Phase 1: Caption Generation (includes grounded vectors)
+cd indexer
+python caption_generator.py
+
+# Phase 2: Vector Indexing
+python indexer.py
+```
+
+### Pipeline Flow
+
+```
+Phase 1: caption_generator.py
+├── Step 1: Generate grounded vectors (V_fact)
+│   ├── Extract Fashionpedia annotations
+│   ├── K-means color extraction from segmentation masks
+│   ├── Build compositional descriptions
+│   └── Output: grounded_vectors.json
+│
+└── Step 2: Generate context-aware captions (V_vibe)
+    ├── Load grounded vectors from Step 1
+    ├── Pass grounded strings as context to BLIP-2
+    ├── Batch process with GPU (8-16 images)
+    └── Output: vibe_captions.json
+
+Phase 2: indexer.py
+├── Step 1: Index grounded layer (V_fact)
+│   ├── Load grounded_vectors.json
+│   ├── CLIP text encode
+│   └── Store in ChromaDB
+│
+├── Step 2: Index vibe layer (V_vibe)
+│   ├── Load vibe_captions.json
+│   ├── CLIP text encode
+│   └── Store in ChromaDB
+│
+└── Step 3: Index visual layer (V_img)
+    ├── Load raw images
+    ├── CLIP image encode (batched)
+    └── Store in ChromaDB
+```
 
 ## Checkpoint/Resume
 
