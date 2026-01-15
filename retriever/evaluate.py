@@ -4,9 +4,11 @@ Includes structured evaluation, ablation study, and metrics computation
 """
 
 import sys
-sys.path.insert(0, '/workspace/fashionpedia-api-master')
-
 import os
+sys.path.insert(0, '/workspace/fashionpedia-api-master')
+# Add parent directory to path for shared modules
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import yaml
 import json
 import numpy as np
@@ -15,8 +17,8 @@ from PIL import Image
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
-from retriever import TripleStreamRetriever
-from logger import evaluator_logger as logger
+from retriever.retriever import TripleStreamRetriever
+from shared.logger import evaluator_logger as logger
 
 
 class SearchEvaluator:
@@ -24,13 +26,18 @@ class SearchEvaluator:
     Evaluate search performance and compare against baselines
     """
     
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self, config_path: str = None):
         """
         Initialize evaluator
         
         Args:
-            config_path: Path to config.yaml
+            config_path: Path to config.yaml (None = auto-detect)
         """
+        if config_path is None:
+            # Get path relative to project root
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+            config_path = os.path.join(project_root, 'shared', 'config.yaml')
+        
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
         

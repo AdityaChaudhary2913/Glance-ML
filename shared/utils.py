@@ -18,7 +18,7 @@ from tqdm import tqdm
 # Add fashionpedia-api to path
 sys.path.insert(0, '/workspace/fashionpedia-api-master')
 from fashionpedia.fp import Fashionpedia
-from logger import utils_logger as logger
+from .logger import utils_logger as logger
 
 
 def closest_color_name(rgb: Tuple[int, int, int]) -> str:

@@ -3,17 +3,19 @@ Generate vibe captions using BLIP-2 for scene and style understanding
 """
 
 import sys
-sys.path.insert(0, '/workspace/fashionpedia-api-master')
-
 import os
+sys.path.insert(0, '/workspace/fashionpedia-api-master')
+# Add parent directory to path for shared modules
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import json
 import yaml
 import torch
 from PIL import Image
 from tqdm import tqdm
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
-from utils import load_fashionpedia_data, save_json
-from logger import caption_logger as logger
+from shared.utils import load_fashionpedia_data, save_json
+from shared.logger import caption_logger as logger
 
 
 class VibeCaptionGenerator:
@@ -21,14 +23,19 @@ class VibeCaptionGenerator:
     Generate scene/style captions using BLIP-2 with constrained prompting
     """
     
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self, config_path: str = None):
         """
         Initialize caption generator
         
         Args:
-            config_path: Path to config.yaml
+            config_path: Path to config.yaml (None = auto-detect)
         """
         # Load configuration
+        if config_path is None:
+            # Get path relative to project root
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+            config_path = os.path.join(project_root, 'shared', 'config.yaml')
+        
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
         
@@ -45,11 +52,16 @@ class VibeCaptionGenerator:
         self.model.to(self.device)
         logger.info(f"Using device: {self.device}")
         
+        # Get project root and make data paths absolute
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        annotations_path = os.path.join(project_root, self.config['data']['annotations_path'])
+        attributes_path = os.path.join(project_root, self.config['data']['attributes_path'])
+        
         # Load Fashionpedia data
-        self.fp, _ = load_fashionpedia_data(
-            self.config['data']['annotations_path'],
-            self.config['data']['attributes_path']
-        )
+        self.fp, _ = load_fashionpedia_data(annotations_path, attributes_path)
+        
+        # Store project root for later use
+        self.project_root = project_root
         
         # Get caption prompt
         self.prompt = self.config['captioning']['prompt']
@@ -150,7 +162,7 @@ class VibeCaptionGenerator:
             # Get image path
             img_info = self.fp.loadImgs([img_id])[0]
             img_filename = img_info['file_name']
-            img_path = os.path.join(self.config['data']['images_dir'], img_filename)
+            img_path = os.path.join(self.project_root, self.config['data']['images_dir'], img_filename)
             
             if not os.path.exists(img_path):
                 logger.warning(f"Image not found: {img_path}")

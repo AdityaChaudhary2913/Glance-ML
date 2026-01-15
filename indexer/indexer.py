@@ -4,9 +4,11 @@ Generates and stores V_fact, V_vibe, and V_img vectors in ChromaDB
 """
 
 import sys
-sys.path.insert(0, '/workspace/fashionpedia-api-master')
-
 import os
+sys.path.insert(0, '/workspace/fashionpedia-api-master')
+# Add parent directory to path for shared modules
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import json
 import yaml
 import numpy as np
@@ -18,7 +20,7 @@ from PIL import Image
 import chromadb
 from chromadb.config import Settings
 
-from utils import (
+from shared.utils import (
     load_fashionpedia_data,
     get_image_annotations,
     extract_dominant_colors,
@@ -27,7 +29,7 @@ from utils import (
     save_json,
     load_json
 )
-from logger import indexer_logger as logger
+from shared.logger import indexer_logger as logger
 
 
 class MultiStreamIndexer:
@@ -35,14 +37,19 @@ class MultiStreamIndexer:
     Builds three independent vector collections for fashion image search
     """
     
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self, config_path: str = None):
         """
         Initialize indexer with configuration
         
         Args:
-            config_path: Path to config.yaml file
+            config_path: Path to config.yaml file (None = auto-detect)
         """
         # Load configuration
+        if config_path is None:
+            # Get path relative to project root
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+            config_path = os.path.join(project_root, 'shared', 'config.yaml')
+        
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
         
@@ -50,8 +57,11 @@ class MultiStreamIndexer:
         logger.info(f"Loading CLIP model: {self.config['models']['clip_model']}")
         self.clip_model = SentenceTransformer(self.config['models']['clip_model'])
         
+        # Get project root for data paths
+        self.project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        
         # Initialize ChromaDB client
-        persist_dir = self.config['chromadb']['persist_directory']
+        persist_dir = os.path.join(self.project_root, self.config['chromadb']['persist_directory'])
         ensure_dir(persist_dir)
         
         logger.info(f"Initializing ChromaDB at {persist_dir}")
@@ -69,11 +79,10 @@ class MultiStreamIndexer:
             self.collections[key] = self.client.create_collection(name)
             logger.info(f"Created collection: {name}")
         
-        # Load Fashionpedia data
-        self.fp, self.attr_data = load_fashionpedia_data(
-            self.config['data']['annotations_path'],
-            self.config['data']['attributes_path']
-        )
+        # Load Fashionpedia data with absolute paths
+        annotations_path = os.path.join(self.project_root, self.config['data']['annotations_path'])
+        attributes_path = os.path.join(self.project_root, self.config['data']['attributes_path'])
+        self.fp, self.attr_data = load_fashionpedia_data(annotations_path, attributes_path)
         
     def extract_colors_for_image(
         self,
@@ -93,7 +102,7 @@ class MultiStreamIndexer:
         # Get image info
         img_info = self.fp.loadImgs([image_id])[0]
         img_filename = img_info['file_name']
-        img_path = os.path.join(self.config['data']['images_dir'], img_filename)
+        img_path = os.path.join(self.project_root, self.config['data']['images_dir'], img_filename)
         
         colors_list = []
         for ann in annotations:
@@ -177,7 +186,7 @@ class MultiStreamIndexer:
             img_info = self.fp.loadImgs([img_id])[0]
             grounded_data[str(img_id)] = {
                 'text': grounded_str,
-                'image_path': os.path.join(self.config['data']['images_dir'], img_info['file_name']),
+                'image_path': os.path.join(self.project_root, self.config['data']['images_dir'], img_info['file_name']),
                 'categories': [ann['category_id'] for ann in annotations],
                 'colors': colors_list
             }
@@ -267,7 +276,7 @@ class MultiStreamIndexer:
             
             # Get image path
             img_info = self.fp.loadImgs([int(img_id)])[0]
-            img_path = os.path.join(self.config['data']['images_dir'], img_info['file_name'])
+            img_path = os.path.join(self.project_root, self.config['data']['images_dir'], img_info['file_name'])
             
             metadatas.append({
                 'text': caption,
@@ -323,7 +332,7 @@ class MultiStreamIndexer:
                 # Get image path
                 img_info = self.fp.loadImgs([img_id])[0]
                 img_filename = img_info['file_name']
-                img_path = os.path.join(self.config['data']['images_dir'], img_filename)
+                img_path = os.path.join(self.project_root, self.config['data']['images_dir'], img_filename)
                 
                 if not os.path.exists(img_path):
                     failed_ids.append(img_id)

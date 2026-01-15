@@ -4,9 +4,11 @@ Implements query-time weighted fusion of three vector streams
 """
 
 import sys
-sys.path.insert(0, '/workspace/fashionpedia-api-master')
-
 import os
+sys.path.insert(0, '/workspace/fashionpedia-api-master')
+# Add parent directory to path for shared modules
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import json
 import yaml
 import numpy as np
@@ -14,7 +16,7 @@ from typing import List, Tuple, Dict, Optional
 from sentence_transformers import SentenceTransformer
 import chromadb
         
-from logger import retriever_logger as logger
+from shared.logger import retriever_logger as logger
 
 
 class TripleStreamRetriever:
@@ -22,23 +24,33 @@ class TripleStreamRetriever:
     Dynamic search with query-time weighting across three vector streams
     """
     
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self, config_path: str = None):
         """
         Initialize retriever
         
         Args:
-            config_path: Path to config.yaml
+            config_path: Path to config.yaml (None = auto-detect)
         """
         # Load configuration
+        if config_path is None:
+            # Get path relative to project root
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+            config_path = os.path.join(project_root, 'shared', 'config.yaml')
+        else:
+            project_root = os.path.abspath(os.path.join(os.path.dirname(config_path), '..'))
+        
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
+        
+        # Store project root for path resolution
+        self.project_root = project_root
         
         # Initialize CLIP model
         logger.info(f"Loading CLIP model: {self.config['models']['clip_model']}")
         self.clip_model = SentenceTransformer(self.config['models']['clip_model'])
         
-        # Initialize ChromaDB client
-        persist_dir = self.config['chromadb']['persist_directory']
+        # Initialize ChromaDB client with absolute path
+        persist_dir = os.path.join(project_root, self.config['chromadb']['persist_directory'])
         logger.info(f"Loading ChromaDB from {persist_dir}")
         self.client = chromadb.PersistentClient(path=persist_dir)
         
