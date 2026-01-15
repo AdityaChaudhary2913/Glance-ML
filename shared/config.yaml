@@ -67,12 +67,12 @@ color_extraction:
 # BLIP-2 Captioning Configuration
 captioning:
   prompt: "Describe the environment and style in one sentence. Format: '[setting], [vibe/occasion]'. Examples: 'Indoor office, professional attire' or 'Outdoor park, casual weekend look'. If unclear, say 'neutral setting, everyday wear'."  # BLIP-2 prompt for caption generation
-  batch_size: 8  # BLIP-2 batch size (smaller due to sequential processing)
+  batch_size: 16  # Increased for 32GB VRAM - 2x faster Stage 2!
   min_unique_settings: 50  # Diversity check threshold
 
 # Indexing Configuration
 indexing:
-  encoding_batch_size: 32  # Batch size for CLIP encoding (text/image)
+  encoding_batch_size: 64  # Increased for faster CLIP encoding (text/image)
   chromadb_batch_size: 5000  # Batch size for ChromaDB insertion
   visual_checkpoint_interval: 1000  # Save progress every N images
   incremental_mode: false  # If true, don't delete existing collections

@@ -128,6 +128,8 @@ class VibeCaptionGenerator:
         
         processed_count = 0
         
+        # Process images sequentially (multiprocessing has pickling issues with nested functions)
+        # Main speedup will come from Stage 2 (GPU batch processing)
         for img_id in tqdm(remaining_ids, desc="Generating grounded strings"):
             # Get annotations
             annotations = get_image_annotations(self.fp, img_id)
@@ -174,7 +176,7 @@ class VibeCaptionGenerator:
         
         total_time = time.time() - start_time
         throughput = len(grounded_data) / total_time if total_time > 0 else 0
-        logger.info(f"\n✓ Grounded vector generation complete:")
+        logger.info("\n✓ Grounded vector generation complete:")
         logger.info(f"  - Total: {len(grounded_data)} vectors")
         logger.info(f"  - Time: {total_time:.1f}s ({total_time/60:.1f} minutes)")
         logger.info(f"  - Throughput: {throughput:.2f} images/sec")
