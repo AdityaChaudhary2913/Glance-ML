@@ -3,7 +3,7 @@
 # Model Configuration
 models:
   clip_model: "clip-ViT-B-32"
-  blip2_model: "Salesforce/blip2-opt-2.7b"
+  florence2_model: "microsoft/Florence-2-large"
 
 # Data Configuration
 data:
@@ -64,9 +64,10 @@ color_extraction:
   min_pixels: 50  # Minimum pixels needed for color extraction
   fallback_color: "neutral"
 
-# BLIP-2 Captioning Configuration
+# Florence-2 Captioning Configuration
 captioning:
-  prompt: "Describe the environment and style in one sentence. Format: '[setting], [vibe/occasion]'. Examples: 'Indoor office, professional attire' or 'Outdoor park, casual weekend look'. If unclear, say 'neutral setting, everyday wear'."
+  task: "<MORE_DETAILED_CAPTION>"  # Florence-2 task prompt
+  batch_size: 32  # Florence-2 is more efficient, can handle larger batches
   min_unique_settings: 50  # Diversity check threshold
 
 # Retrieval Configuration

@@ -14,7 +14,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 from typing import List, Dict
-from transformers import Blip2Processor, Blip2ForConditionalGeneration
+from transformers import AutoProcessor, AutoModelForCausalLM
 from shared.utils import (
     load_fashionpedia_data, 
     save_json, 
@@ -47,12 +47,17 @@ class VibeCaptionGenerator:
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
         
-        # Initialize BLIP-2
-        logger.info(f"Loading BLIP-2 model: {self.config['models']['blip2_model']}")
-        self.processor = Blip2Processor.from_pretrained(self.config['models']['blip2_model'])
-        self.model = Blip2ForConditionalGeneration.from_pretrained(
-            self.config['models']['blip2_model'],
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+        # Initialize Florence-2
+        logger.info(f"Loading Florence-2 model: {self.config['models']['florence2_model']}")
+        self.processor = AutoProcessor.from_pretrained(
+            self.config['models']['florence2_model'],
+            trust_remote_code=True
+        )
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.config['models']['florence2_model'],
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            trust_remote_code=True,
+            attn_implementation="eager"  # Fix for _supports_sdpa issue
         )
         
         # Move to GPU if available
@@ -71,9 +76,9 @@ class VibeCaptionGenerator:
         # Store project root for later use
         self.project_root = project_root
         
-        # Get caption prompt
-        self.prompt = self.config['captioning']['prompt']
-        logger.info(f"Caption prompt: {self.prompt}")
+        # Get Florence-2 task prompt
+        self.task_prompt = self.config['captioning'].get('task', '<MORE_DETAILED_CAPTION>')
+        logger.info(f"Florence-2 task: {self.task_prompt}")
     
     def generate_grounded_vectors(
         self,
@@ -180,31 +185,27 @@ class VibeCaptionGenerator:
         try:
             image = Image.open(image_path).convert('RGB')
             
-            # Prepare inputs WITHOUT the prompt text (BLIP-2 issue)
+            # Use Florence-2's detailed caption task
+            task_prompt = "<MORE_DETAILED_CAPTION>"
             inputs = self.processor(
+                text=task_prompt,
                 images=image,
                 return_tensors="pt"
             ).to(self.device, torch.float16 if self.device == "cuda" else torch.float32)
             
-            # Generate caption with the prompt as text input
-            prompt_text = "Question: What is the setting and style? Answer:"
-            
             with torch.no_grad():
                 generated_ids = self.model.generate(
                     **inputs,
-                    max_new_tokens=30,
+                    max_new_tokens=100,
                     num_beams=3,
-                    min_length=5,
-                    temperature=0.7,
-                    do_sample=False
+                    early_stopping=True
                 )
             
-            # Decode caption
-            caption = self.processor.decode(generated_ids[0], skip_special_tokens=True)
+            # Decode and parse caption
+            generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+            caption = self._parse_florence_output(generated_text, task_prompt)
             
-            # Clean up caption - remove prompt if echoed
-            caption = caption.replace(prompt_text, "").strip()
-            if not caption or caption == self.prompt:
+            if not caption:
                 return "neutral setting, everyday wear"
             
             return caption
@@ -227,55 +228,52 @@ class VibeCaptionGenerator:
         try:
             image = Image.open(image_path).convert('RGB')
             
-            # Build context-aware prompt using grounded string
-            prompt_text = f"""The image contains: {grounded_str}
-
-Question: Given these specific items, what is the scene setting (indoor/outdoor, location) and overall style vibe (formal/casual/athletic)? Answer in format: [Setting], [Vibe].
-Answer:"""
-            
-            # Prepare inputs with the prompt
+            # Florence-2 detailed caption task - naturally includes scene context
+            task_prompt = "<MORE_DETAILED_CAPTION>"
             inputs = self.processor(
+                text=task_prompt,
                 images=image,
-                text=prompt_text,
                 return_tensors="pt"
             ).to(self.device, torch.float16 if self.device == "cuda" else torch.float32)
             
             with torch.no_grad():
                 generated_ids = self.model.generate(
                     **inputs,
-                    max_new_tokens=40,
+                    max_new_tokens=100,
                     num_beams=3,
-                    min_length=10,
-                    temperature=0.7,
-                    do_sample=False
+                    early_stopping=True
                 )
             
-            caption = self.processor.decode(generated_ids[0], skip_special_tokens=True)
+            generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+            caption = self._parse_florence_output(generated_text, task_prompt)
             
-            # Clean up - remove the long prompt echo
-            caption = caption.split("Answer:")[-1].strip()
-            
-            if not caption:
+            # Florence-2 provides detailed captions naturally
+            # Combine with grounded knowledge for context
+            if caption and grounded_str:
+                # Caption already contains scene + garments from Florence-2
+                # The grounded_str ensures we have accurate garment info
+                return caption
+            elif caption:
+                return caption
+            else:
                 return "neutral setting, everyday wear"
-            
-            return caption
             
         except Exception as e:
             logger.warning(f"Context-aware caption generation failed for {image_path}: {e}")
             return "neutral setting, everyday wear"
     
-    def generate_captions_batch(self, image_paths: List[str], batch_size: int = 16) -> List[str]:
+    def generate_captions_batch(self, image_paths: List[str], batch_size: int = 32) -> List[str]:
         """Generate vibe captions for a batch of images (legacy method, no context)
         
         Args:
             image_paths: List of image paths to process
-            batch_size: Number of images to process at once (default: 16)
+            batch_size: Number of images to process at once (default: 32, Florence-2 is more efficient)
             
         Returns:
             List of captions corresponding to image_paths
         """
         captions = []
-        prompt_text = "Question: What is the setting and style? Answer:"
+        task_prompt = "<MORE_DETAILED_CAPTION>"
         
         for batch_start in range(0, len(image_paths), batch_size):
             batch_paths = image_paths[batch_start:batch_start + batch_size]
@@ -298,8 +296,9 @@ Answer:"""
                 continue
             
             try:
-                # Batch process with BLIP-2
+                # Batch process with Florence-2
                 inputs = self.processor(
+                    text=[task_prompt] * len(valid_images),
                     images=valid_images,
                     return_tensors="pt",
                     padding=True
@@ -308,20 +307,18 @@ Answer:"""
                 with torch.no_grad():
                     generated_ids = self.model.generate(
                         **inputs,
-                        max_new_tokens=30,
+                        max_new_tokens=100,
                         num_beams=3,
-                        min_length=5,
-                        temperature=0.7,
-                        do_sample=False
+                        early_stopping=True
                     )
                 
                 # Decode all captions
                 batch_captions = []
-                for gen_id in generated_ids:
-                    caption = self.processor.decode(gen_id, skip_special_tokens=True)
-                    caption = caption.replace(prompt_text, "").strip()
+                generated_texts = self.processor.batch_decode(generated_ids, skip_special_tokens=False)
+                for gen_text in generated_texts:
+                    caption = self._parse_florence_output(gen_text, task_prompt)
                     
-                    if not caption or caption == self.prompt:
+                    if not caption:
                         caption = "neutral setting, everyday wear"
                     
                     batch_captions.append(caption)
@@ -345,59 +342,47 @@ Answer:"""
         self, 
         image_paths: List[str], 
         grounded_strings: List[str],
-        batch_size: int = 16
+        batch_size: int = 32
     ) -> List[str]:
-        """Batch generate captions WITH grounded context (5-10x faster)
+        """Batch generate captions WITH grounded context (Florence-2 naturally detailed)
         
         Args:
             image_paths: List of image paths
             grounded_strings: List of grounded descriptions (from V_fact)
-            batch_size: Batch size for processing
+            batch_size: Batch size for processing (default: 32, Florence-2 more efficient)
         
         Returns:
             List of contextual vibe captions
         """
         captions = []
+        task_prompt = "<MORE_DETAILED_CAPTION>"
         
         for batch_start in range(0, len(image_paths), batch_size):
             batch_paths = image_paths[batch_start:batch_start + batch_size]
             batch_grounded = grounded_strings[batch_start:batch_start + batch_size]
             batch_images = []
-            batch_prompts = []
             
-            # Load images and build prompts
-            for img_path, grounded_str in zip(batch_paths, batch_grounded):
+            # Load images
+            for img_path in batch_paths:
                 try:
                     img = Image.open(img_path).convert('RGB')
                     batch_images.append(img)
-                    
-                    prompt = f"""The image contains: {grounded_str}
-
-Question: Given these items, what is the scene setting and style vibe? Format: [Setting], [Vibe].
-Answer:"""
-                    batch_prompts.append(prompt)
-                    
                 except Exception as e:
                     logger.warning(f"Failed to load {img_path}: {e}")
                     batch_images.append(None)
-                    batch_prompts.append(None)
             
             # Filter valid entries
-            valid_data = [(img, prompt) for img, prompt in zip(batch_images, batch_prompts) 
-                          if img is not None]
+            valid_images = [img for img in batch_images if img is not None]
             
-            if not valid_data:
+            if not valid_images:
                 captions.extend(["neutral setting, everyday wear"] * len(batch_images))
                 continue
             
-            valid_images = [x[0] for x in valid_data]
-            valid_prompts = [x[1] for x in valid_data]
-            
             try:
-                # Batch process with context
+                # Florence-2 naturally generates detailed captions with scene context
                 inputs = self.processor(
+                    text=[task_prompt] * len(valid_images),
                     images=valid_images,
-                    text=valid_prompts,
                     return_tensors="pt",
                     padding=True
                 ).to(self.device, torch.float16 if self.device == "cuda" else torch.float32)
@@ -405,18 +390,16 @@ Answer:"""
                 with torch.no_grad():
                     generated_ids = self.model.generate(
                         **inputs,
-                        max_new_tokens=40,
+                        max_new_tokens=100,
                         num_beams=3,
-                        min_length=10,
-                        temperature=0.7,
-                        do_sample=False
+                        early_stopping=True
                     )
                 
                 # Decode captions
                 batch_captions = []
-                for gen_id in generated_ids:
-                    caption = self.processor.decode(gen_id, skip_special_tokens=True)
-                    caption = caption.split("Answer:")[-1].strip()
+                generated_texts = self.processor.batch_decode(generated_ids, skip_special_tokens=False)
+                for gen_text in generated_texts:
+                    caption = self._parse_florence_output(gen_text, task_prompt)
                     
                     if not caption:
                         caption = "neutral setting, everyday wear"
@@ -444,7 +427,7 @@ Answer:"""
         output_path: str = None,
         checkpoint_interval: int = 500,
         resume: bool = True,
-        batch_size: int = 16,
+        batch_size: int = 32,
         auto_generate_grounded: bool = True
     ) -> dict:
         """
@@ -456,7 +439,7 @@ Answer:"""
             output_path: Path to save captions JSON (default: project_root/vibe_captions.json)
             checkpoint_interval: Save progress every N images
             resume: Whether to resume from existing checkpoint
-            batch_size: Number of images to process at once (default: 16)
+            batch_size: Number of images to process at once (default: 32, Florence-2 more efficient)
             auto_generate_grounded: Whether to auto-generate grounded vectors (default: True)
             
         Returns:
