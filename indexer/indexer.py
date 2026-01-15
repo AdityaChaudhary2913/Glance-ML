@@ -67,17 +67,28 @@ class MultiStreamIndexer:
         logger.info(f"Initializing ChromaDB at {persist_dir}")
         self.client = chromadb.PersistentClient(path=persist_dir)
         
-        # Create collections (delete if exists for fresh start)
+        # Create collections (delete if exists unless incremental mode)
         collection_names = self.config['chromadb']['collections']
         self.collections = {}
+        incremental = self.config.get('indexing', {}).get('incremental_mode', False)
         
         for key, name in collection_names.items():
-            try:
-                self.client.delete_collection(name)
-            except:
-                pass
-            self.collections[key] = self.client.create_collection(name)
-            logger.info(f"Created collection: {name}")
+            if not incremental:
+                try:
+                    self.client.delete_collection(name)
+                    logger.info(f"Deleted existing collection: {name}")
+                except:
+                    pass
+                self.collections[key] = self.client.create_collection(name)
+                logger.info(f"Created fresh collection: {name}")
+            else:
+                try:
+                    self.collections[key] = self.client.get_collection(name)
+                    count = self.collections[key].count()
+                    logger.info(f"Loaded existing collection: {name} ({count} vectors)")
+                except:
+                    self.collections[key] = self.client.create_collection(name)
+                    logger.info(f"Created new collection: {name}")
         
         # Load Fashionpedia data with absolute paths
         annotations_path = os.path.join(self.project_root, self.config['data']['annotations_path'])
@@ -215,6 +226,9 @@ class MultiStreamIndexer:
         Args:
             grounded_data: Dictionary from generate_grounded_vectors
         """
+        import time
+        start_time = time.time()
+        
         logger.info("=== Indexing Grounded Layer ===")
         
         image_ids = []
@@ -231,40 +245,67 @@ class MultiStreamIndexer:
                 'colors': json.dumps(data['colors'])
             })
         
-        # Encode with CLIP Text Encoder (already batched internally)
-        logger.info("Encoding grounded strings with CLIP...")
+        # Get batch sizes from config
+        encoding_batch = self.config.get('indexing', {}).get('encoding_batch_size', 32)
+        chromadb_batch = self.config.get('indexing', {}).get('chromadb_batch_size', 5000)
+        
+        # Encode with CLIP Text Encoder
+        logger.info(f"Encoding {len(texts)} grounded strings with CLIP (batch_size={encoding_batch})...")
+        encode_start = time.time()
         embeddings = self.clip_model.encode(
             texts,
             show_progress_bar=True,
             convert_to_numpy=True,
-            batch_size=32  # Explicit batch size for efficiency
+            batch_size=encoding_batch
         )
+        encode_time = time.time() - encode_start
+        logger.info(f"  Encoding took {encode_time:.1f}s ({len(texts)/encode_time:.1f} texts/sec)")
         
-        # Store in ChromaDB in batches to avoid memory issues
-        logger.info("Storing in ChromaDB (batched)...")
-        batch_size = 5000  # ChromaDB handles this well
-        for i in range(0, len(image_ids), batch_size):
-            end_idx = min(i + batch_size, len(image_ids))
+        # Store in ChromaDB in batches
+        logger.info(f"Storing in ChromaDB (batch_size={chromadb_batch})...")
+        insert_start = time.time()
+        for i in range(0, len(image_ids), chromadb_batch):
+            end_idx = min(i + chromadb_batch, len(image_ids))
             self.collections['grounded'].add(
                 embeddings=embeddings[i:end_idx].tolist(),
                 ids=image_ids[i:end_idx],
                 metadatas=metadatas[i:end_idx]
             )
-            logger.info(f"  Inserted batch {i//batch_size + 1}: {end_idx}/{len(image_ids)}")
+            logger.info(f"  Inserted batch {i//chromadb_batch + 1}: {end_idx}/{len(image_ids)}")
+        insert_time = time.time() - insert_start
         
-        logger.info(f"Indexed {len(image_ids)} grounded vectors")
+        total_time = time.time() - start_time
+        logger.info(f"✓ Indexed {len(image_ids)} grounded vectors in {total_time:.1f}s")
     
-    def index_vibe_layer(self, vibe_captions_path: str = "vibe_captions.json"):
+    def index_vibe_layer(self, vibe_captions_path: str = "vibe_captions.json", grounded_data: Dict = None):
         """
         Encode and store vibe captions in ChromaDB with batched inserts
         
         Args:
             vibe_captions_path: Path to vibe captions JSON file
+            grounded_data: Optional grounded data for validation
         """
+        import time
+        start_time = time.time()
+        
         logger.info("=== Indexing Vibe Layer (V_vibe) ===")
         
         # Load vibe captions
         vibe_data = load_json(vibe_captions_path)
+        
+        # Validate consistency with grounded layer
+        if grounded_data:
+            grounded_ids = set(grounded_data.keys())
+            vibe_ids = set(vibe_data.keys())
+            if grounded_ids != vibe_ids:
+                missing_in_vibe = grounded_ids - vibe_ids
+                missing_in_grounded = vibe_ids - grounded_ids
+                if missing_in_vibe:
+                    logger.warning(f"⚠ {len(missing_in_vibe)} images in grounded but not in vibe")
+                if missing_in_grounded:
+                    logger.warning(f"⚠ {len(missing_in_grounded)} images in vibe but not in grounded")
+            else:
+                logger.info(f"✓ Consistency check passed: {len(vibe_ids)} images match")
         
         image_ids = []
         texts = []
@@ -283,46 +324,93 @@ class MultiStreamIndexer:
                 'image_path': img_path
             })
         
+        # Get batch sizes from config
+        encoding_batch = self.config.get('indexing', {}).get('encoding_batch_size', 32)
+        chromadb_batch = self.config.get('indexing', {}).get('chromadb_batch_size', 5000)
+        
         # Encode with CLIP Text Encoder
-        logger.info("Encoding vibe captions with CLIP...")
+        logger.info(f"Encoding {len(texts)} vibe captions with CLIP (batch_size={encoding_batch})...")
+        encode_start = time.time()
         embeddings = self.clip_model.encode(
             texts,
             show_progress_bar=True,
             convert_to_numpy=True,
-            batch_size=32  # Explicit batch size
+            batch_size=encoding_batch
         )
+        encode_time = time.time() - encode_start
+        logger.info(f"  Encoding took {encode_time:.1f}s ({len(texts)/encode_time:.1f} texts/sec)")
         
         # Store in ChromaDB in batches
-        logger.info("Storing in ChromaDB (batched)...")
-        batch_size = 5000
-        for i in range(0, len(image_ids), batch_size):
-            end_idx = min(i + batch_size, len(image_ids))
+        logger.info(f"Storing in ChromaDB (batch_size={chromadb_batch})...")
+        insert_start = time.time()
+        for i in range(0, len(image_ids), chromadb_batch):
+            end_idx = min(i + chromadb_batch, len(image_ids))
             self.collections['vibe'].add(
                 embeddings=embeddings[i:end_idx].tolist(),
                 ids=image_ids[i:end_idx],
                 metadatas=metadatas[i:end_idx]
             )
-            logger.info(f"  Inserted batch {i//batch_size + 1}: {end_idx}/{len(image_ids)}")
+            logger.info(f"  Inserted batch {i//chromadb_batch + 1}: {end_idx}/{len(image_ids)}")
+        insert_time = time.time() - insert_start
         
-        logger.info(f"Indexed {len(image_ids)} vibe vectors")
+        total_time = time.time() - start_time
+        logger.info(f"✓ Indexed {len(image_ids)} vibe vectors in {total_time:.1f}s")
     
-    def index_visual_layer(self, image_ids: List[int], batch_size: int = 32):
+    def index_visual_layer(
+        self,
+        image_ids: List[int],
+        checkpoint_interval: int = None,
+        resume: bool = True
+    ):
         """
-        Encode and store raw images in ChromaDB with BATCHING for 3-5x speedup
+        Encode and store raw images in ChromaDB with BATCHING and CHECKPOINTING
         
         Args:
             image_ids: List of image IDs to process
-            batch_size: Number of images to encode at once (default: 32)
+            checkpoint_interval: Save progress every N images (None = use config)
+            resume: Whether to resume from checkpoint
         """
-        logger.info("=== Indexing Visual Layer (V_img) ===")
-        logger.info(f"Using batch size: {batch_size} for faster encoding")
+        import time
+        start_time = time.time()
         
-        total_indexed = 0
+        logger.info("=== Indexing Visual Layer (V_img) ===")
+        
+        # Get config values
+        batch_size = self.config.get('indexing', {}).get('encoding_batch_size', 32)
+        if checkpoint_interval is None:
+            checkpoint_interval = self.config.get('indexing', {}).get('visual_checkpoint_interval', 1000)
+        save_failed = self.config.get('indexing', {}).get('save_failed_ids', True)
+        
+        logger.info(f"Batch size: {batch_size}, Checkpoint interval: {checkpoint_interval}")
+        
+        checkpoint_path = os.path.join(self.project_root, 'visual_index_checkpoint.json')
+        failed_ids_path = os.path.join(self.project_root, 'visual_failed_ids.json')
+        
+        # Load checkpoint if exists
+        indexed_ids = set()
         failed_ids = []
         
+        if resume and os.path.exists(checkpoint_path):
+            try:
+                checkpoint_data = load_json(checkpoint_path)
+                indexed_ids = set(checkpoint_data.get('indexed_ids', []))
+                failed_ids = checkpoint_data.get('failed_ids', [])
+                logger.info(f"✓ Resumed from checkpoint: {len(indexed_ids)} images already indexed")
+            except Exception as e:
+                logger.warning(f"Could not load checkpoint: {e}")
+        
+        # Filter out already indexed images
+        remaining_ids = [img_id for img_id in image_ids if img_id not in indexed_ids]
+        
+        if len(remaining_ids) < len(image_ids):
+            logger.info(f"Skipping {len(image_ids) - len(remaining_ids)} already indexed images")
+        
+        total_indexed = len(indexed_ids)
+        processed_since_checkpoint = 0
+        
         # Process in batches
-        for batch_start in tqdm(range(0, len(image_ids), batch_size), desc="Processing images"):
-            batch_ids = image_ids[batch_start:batch_start + batch_size]
+        for batch_start in tqdm(range(0, len(remaining_ids), batch_size), desc="Encoding images"):
+            batch_ids = remaining_ids[batch_start:batch_start + batch_size]
             
             batch_images = []
             batch_img_ids = []
@@ -330,15 +418,15 @@ class MultiStreamIndexer:
             
             for img_id in batch_ids:
                 # Get image path
-                img_info = self.fp.loadImgs([img_id])[0]
-                img_filename = img_info['file_name']
-                img_path = os.path.join(self.project_root, self.config['data']['images_dir'], img_filename)
-                
-                if not os.path.exists(img_path):
-                    failed_ids.append(img_id)
-                    continue
-                
                 try:
+                    img_info = self.fp.loadImgs([img_id])[0]
+                    img_filename = img_info['file_name']
+                    img_path = os.path.join(self.project_root, self.config['data']['images_dir'], img_filename)
+                    
+                    if not os.path.exists(img_path):
+                        failed_ids.append(img_id)
+                        continue
+                    
                     # Load image
                     img = Image.open(img_path).convert('RGB')
                     batch_images.append(img)
@@ -354,7 +442,7 @@ class MultiStreamIndexer:
                 continue
             
             try:
-                # Batch encode with CLIP - MUCH faster!
+                # Batch encode with CLIP
                 embeddings = self.clip_model.encode(batch_images, convert_to_numpy=True)
                 
                 # Store batch in ChromaDB
@@ -364,15 +452,44 @@ class MultiStreamIndexer:
                     metadatas=batch_metadatas
                 )
                 
+                # Update tracking
+                for img_id_str in batch_img_ids:
+                    indexed_ids.add(int(img_id_str))
+                
                 total_indexed += len(batch_img_ids)
+                processed_since_checkpoint += len(batch_img_ids)
+                
+                # Save checkpoint periodically
+                if processed_since_checkpoint >= checkpoint_interval:
+                    checkpoint_data = {
+                        'indexed_ids': list(indexed_ids),
+                        'failed_ids': failed_ids,
+                        'total_indexed': total_indexed
+                    }
+                    save_json(checkpoint_data, checkpoint_path)
+                    logger.info(f"✓ Checkpoint saved: {total_indexed} images indexed")
+                    processed_since_checkpoint = 0
                 
             except Exception as e:
                 logger.error(f"Batch encoding failed at {batch_start}: {e}")
                 failed_ids.extend([int(i) for i in batch_img_ids])
         
-        logger.info(f"Indexed {total_indexed} visual vectors")
+        # Save failed IDs to file if enabled
+        if save_failed and failed_ids:
+            save_json({'failed_ids': failed_ids, 'count': len(failed_ids)}, failed_ids_path)
+            logger.warning(f"⚠ Saved {len(failed_ids)} failed IDs to: {failed_ids_path}")
+        
+        # Remove checkpoint after successful completion
+        if os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
+            logger.info(f"✓ Removed checkpoint file (indexing completed)")
+        
+        total_time = time.time() - start_time
+        throughput = total_indexed / total_time if total_time > 0 else 0
+        logger.info(f"✓ Indexed {total_indexed} visual vectors in {total_time:.1f}s ({throughput:.1f} images/sec)")
+        
         if failed_ids:
-            logger.warning(f"Failed to process {len(failed_ids)} images")
+            logger.warning(f"⚠ {len(failed_ids)} images failed to process")
     
     def build_index(self, num_images: int = None):
         """
@@ -418,6 +535,10 @@ class MultiStreamIndexer:
         all_img_ids = self.fp.getImgIds()
         image_ids = all_img_ids[:num_images]
         
+        # Start overall timer
+        import time
+        pipeline_start = time.time()
+        
         # Load grounded data
         logger.info("="*60)
         logger.info("STEP 1/3: Indexing Grounded Layer (V_fact)")
@@ -425,21 +546,24 @@ class MultiStreamIndexer:
         grounded_data = load_json(grounded_path)
         self.index_grounded_layer(grounded_data)
         
-        # Index vibe layer
+        # Index vibe layer with validation
         logger.info("\n" + "="*60)
         logger.info("STEP 2/3: Indexing Vibe Layer (V_vibe)")
         logger.info("="*60)
-        self.index_vibe_layer(vibe_path)
+        self.index_vibe_layer(vibe_path, grounded_data=grounded_data)
         
-        # Index visual layer
+        # Index visual layer with checkpointing
         logger.info("\n" + "="*60)
         logger.info("STEP 3/3: Indexing Visual Layer (V_img)")
         logger.info("="*60)
         self.index_visual_layer(image_ids)
         
+        pipeline_time = time.time() - pipeline_start
+        
         logger.info("\n" + "="*70)
         logger.info("✓ INDEXING COMPLETE")
         logger.info("="*70)
+        logger.info(f"Total pipeline time: {pipeline_time:.1f}s ({pipeline_time/60:.1f} minutes)")
         logger.info("ChromaDB collections created:")
         for key, collection in self.collections.items():
             count = collection.count()

@@ -70,6 +70,14 @@ captioning:
   batch_size: 32  # Florence-2 is more efficient, can handle larger batches
   min_unique_settings: 50  # Diversity check threshold
 
+# Indexing Configuration
+indexing:
+  encoding_batch_size: 32  # Batch size for CLIP encoding (text/image)
+  chromadb_batch_size: 5000  # Batch size for ChromaDB insertion
+  visual_checkpoint_interval: 1000  # Save progress every N images
+  incremental_mode: false  # If true, don't delete existing collections
+  save_failed_ids: true  # Save failed image IDs to file
+
 # Retrieval Configuration
 retrieval:
   top_k: 10
