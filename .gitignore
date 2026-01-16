@@ -45,3 +45,4 @@ nohup.out
 # Backup files
 *.bak
 *~
+/outputs
