@@ -148,17 +148,25 @@ Edit `shared/config.yaml` to customize:
 
 ## Completed Runtime (45,623 images)
 
-| Stage | Time | Status |
-|-------|------|--------|
-| Grounded Layer Generation | ~45 min | ✅ |
-| Vibe Caption Generation (BLIP-2) | ~4-5 hours | ✅ |
-| CLIP Text Encoding (V_fact + V_vibe) | ~20-30 min | ✅ |
-| CLIP Image Encoding (V_img) | ~30-40 min | ✅ |
-| ChromaDB Indexing (all 3 layers) | ~15-20 min | ✅ |
-| **Total Pipeline Time** | **~3-4 hours** | ✅ |
+**Actual measured times from logs (2026-01-16):**
 
-**Output**: 136,869 vectors ready for retrieval (3 streams × 45,623 images)
-| Grounded Indexing | ~25 min |
-| Vibe Indexing | ~12 min |
-| Visual Indexing | ~10-15 min |
-| **Total** | **~14-15 hours** |
+| Stage | Time | Throughput | Status |
+|-------|------|------------|--------|
+| Grounded Layer Generation (STEP 1) | **249 min (4h 9m)** | 3.05 images/sec | ✅ |
+| Vibe Caption Generation - BLIP-2 (STEP 2) | **199 min (3h 19m)** | 3.82 images/sec | ✅ |
+| **Total Caption Generation** | **448 min (7.5 hours)** | 1.70 images/sec | ✅ |
+| Vector Encoding + ChromaDB Indexing | **17 min** | 135.6 vectors/sec | ✅ |
+| **Total Pipeline Time** | **465 min (7.75 hours)** | - | ✅ |
+
+**Hardware**: NVIDIA DGX Server with GPU acceleration
+
+**Output**: 136,869 vectors indexed across 3 collections:
+- `grounded_vectors`: 45,623 vectors (Fashionpedia + colors)
+- `vibe_vectors`: 45,623 vectors (BLIP-2 scene captions)
+- `visual_vectors`: 45,623 vectors (CLIP image embeddings)
+
+**Performance Notes**:
+- BLIP-2 captioning is the bottleneck (~3h 19m for rich contextual descriptions)
+- Grounded generation includes Fashionpedia parsing + K-means color extraction
+- Vector encoding highly optimized with batched CLIP encoding
+- ChromaDB indexing extremely fast with batched inserts (5000 vectors/batch)
