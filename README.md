@@ -27,7 +27,17 @@ cd Glance-ML-Internship-Assignment
 ### Step 2: Install Dependencies
 
 ```bash
+# Create virtual environment (recommended)
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Install fashionpedia-api
+cd fashionpedia-api-master
+pip install -e .
+cd ..
 ```
 
 **Key dependencies:**
@@ -57,10 +67,13 @@ unzip chroma_db.zip -d .
 ```bash
 # Download from Fashionpedia website
 # Place files in data/ directory:
-# - instances_attributes_train2020.json
-# - attributes_train2020.json
+# - instances_attributes_train2020.json (or instances_attributes_val2020.json)
+# - attributes_train2020.json (or attributes_val2020.json)
+# - info_test2020.json
 # - train/ (folder with 45,623 images)
 ```
+
+Configure paths in `shared/config.yaml` if your data files have different names or locations.
 
 ### Step 5: Run Indexing Pipeline (If Building from Scratch)
 
@@ -159,44 +172,6 @@ BLIP-2 provides:
 - **Real-time latency tracking** for performance monitoring (~30-40ms per query)
 - **Batch metadata retrieval** for 10-30x faster results display
 
-## Installation
-
-### Prerequisites
-- Python 3.8+
-- CUDA-capable GPU (recommended for faster caption generation and indexing)
-
-### Setup
-
-```bash
-# Clone repository
-cd /path/to/Glance
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install fashionpedia-api
-cd fashionpedia-api-master
-pip install -e .
-cd ..
-```
-
-### Data Setup
-
-1. Ensure Fashionpedia dataset is in `data/` directory:
-   ```
-   data/
-   ├── instances_attributes_val2020.json
-   ├── attributes_val2020.json
-   ├── info_test2020.json 
-   └── train/   (images)
-   ```
-
-2. Configure paths in `config.yaml` if needed
-
 ## Usage
 
 ### Indexing (Already Completed - 45,623 images indexed)
@@ -234,40 +209,6 @@ tail -f logs/retriever.log
 - First query: ~200-250ms (model warmup)
 - Subsequent queries: ~30-40ms average
 - All results include latency tracking
-
-### Programmatic Usage
-
-```python
-from retriever.retriever import TripleStreamRetriever
-
-# Initialize retriever (loads CLIP + ChromaDB collections)
-retriever = TripleStreamRetriever()
-
-# Search with preset weights
-results = retriever.dynamic_search(
-    query="A person in a bright yellow raincoat",
-    preset="attribute_specific",
-    top_k=10
-)
-# Returns: [(img_id, score, {grounded, vibe, visual scores})]
-
-# Search with custom weights
-results = retriever.dynamic_search(
-    query="Casual weekend outfit",
-    alpha=0.2,  # Grounded attributes
-    beta=0.7,   # Vibe/context  
-    gamma=0.1,  # Visual similarity
-    top_k=10,
-    expand=True,  # Query expansion
-    filters={'min_garments': 3}  # Filter by garment count
-)
-
-# Apply color re-ranking
-results = retriever.rerank_by_color(results, query)
-
-# Print formatted results with batch metadata
-retriever.print_results(query, results)
-```
 
 ## Assignment Requirements Compliance
 
