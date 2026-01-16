@@ -66,11 +66,11 @@ with st.sidebar:
     st.header("⚙️ Search Settings")
     
     preset_options = {
+        "Compositional": "compositional",
         "Attribute Specific": "attribute_specific",
         "Contextual/Place": "contextual_place",
         "Complex Semantic": "complex_semantic",
         "Style Inference": "style_inference",
-        "Compositional": "compositional",
         "Custom Weights": "custom"
     }
     
