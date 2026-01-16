@@ -6,15 +6,83 @@ A sophisticated fashion image retrieval system that understands **what** someone
 
 > **🎥 Demo Video**: Watch the Web UI in action at [Google Drive](https://drive.google.com/file/d/1OnA6LFqLni2XDpjmIwVKiXBlMu7tDq45/view?usp=sharing).
 
-## 🌐 Interactive Web Demo
+---
 
-**Try the Streamlit web interface for interviews and demonstrations:**
+## 🚀 Installation & Setup
+
+### Prerequisites
+
+- Python 3.8+
+- CUDA-capable GPU (recommended for BLIP-2 caption generation)
+- 8GB+ RAM
+- 5GB+ disk space (for models and database)
+
+### Step 1: Clone the Repository
+
+```bash
+git clone https://github.com/AdityaChaudhary2913/Glance-ML-Internship-Assignment.git
+cd Glance-ML-Internship-Assignment
+```
+
+### Step 2: Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+**Key dependencies:**
+- `chromadb` - Vector database
+- `transformers` - CLIP & BLIP-2 models
+- `torch` - Deep learning framework
+- `streamlit` - Web interface
+- `Pillow` - Image processing
+- `pyyaml` - Configuration management
+
+### Step 3: Download Pre-indexed Database (Recommended)
+
+To skip the indexing step and use pre-built vectors:
+
+```bash
+# Download chroma_db/, logs/, and outputs/ from Google Drive
+# Link: https://drive.google.com/drive/folders/1KzYAc0MjlBHCEsXJP3L_8I_QdKsrTURa?usp=sharing
+
+# Extract to project root
+unzip chroma_db.zip -d .
+```
+
+**OR** proceed to Step 4 to build from scratch.
+
+### Step 4: Download Fashionpedia Dataset (If Building from Scratch)
+
+```bash
+# Download from Fashionpedia website
+# Place files in data/ directory:
+# - instances_attributes_train2020.json
+# - attributes_train2020.json
+# - train/ (folder with 45,623 images)
+```
+
+### Step 5: Run Indexing Pipeline (If Building from Scratch)
+
+```bash
+bash bash_files/indexer_pipeline.sh
+```
+
+This will:
+1. Extract Fashionpedia attributes and colors → Generate V_fact
+2. Generate BLIP-2 captions → Generate V_vibe
+3. Encode images with CLIP → Generate V_img
+4. Store 136,869 vectors in ChromaDB
+
+**Estimated time**: 2-4 hours on GPU (8-12 hours on CPU)
+
+### Step 6: Launch Web Interface
 
 ```bash
 streamlit run app.py
 ```
 
-Open `http://localhost:8501` in your browser for an interactive search interface with real-time results, score visualizations, and metadata display.
+Open `http://localhost:8501` to start searching!
 
 ---
 
