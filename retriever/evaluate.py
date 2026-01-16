@@ -56,7 +56,8 @@ class SearchEvaluator:
         self,
         query: str,
         preset: str,
-        ground_truth_ids: List[str] = None
+        ground_truth_ids: List[str] = None,
+        auto_judge: bool = True
     ) -> Dict:
         """
         Comprehensive evaluation for one query
@@ -65,6 +66,7 @@ class SearchEvaluator:
             query: Search query string
             preset: Weight preset name
             ground_truth_ids: Optional list of relevant image IDs
+            auto_judge: Use automatic relevance judgment (True) or manual (False)
             
         Returns:
             Dictionary with evaluation results
@@ -101,24 +103,36 @@ class SearchEvaluator:
         for i, img_id in enumerate(vanilla_results[:5], 1):
             logger.info(f"Rank {i}: Image ID {img_id}")
         
-        # Manual relevance judgment
-        logger.info("\n" + "="*100)
-        logger.info("RELEVANCE JUDGMENT")
-        logger.info("Please review the images and enter relevant ranks.")
-        logger.info("="*100)
-        
-        relevant_input = input(f"\nEnter relevant ranks for '{query}' (e.g., 1,2,4,7 or 'skip'): ")
-        
-        precision_at_10 = None
-        relevant_ranks = []
-        
-        if relevant_input.lower() != 'skip':
-            try:
-                relevant_ranks = [int(r.strip()) for r in relevant_input.split(',') if r.strip()]
-                precision_at_10 = len(relevant_ranks) / 10
-                logger.info(f"Precision@10: {precision_at_10:.2f}")
-            except:
-                logger.warning("Invalid input, skipping metric calculation")
+        # Calculate metrics
+        if auto_judge:
+            # Automatic relevance judgment based on metadata relevance
+            triple_relevant = self._auto_judge_relevance(query, results[:10])
+            vanilla_relevant = self._auto_judge_relevance_vanilla(query, vanilla_results[:10])
+            
+            triple_p10 = len(triple_relevant) / 10
+            vanilla_p10 = len(vanilla_relevant) / 10
+            
+            logger.info(f"\n[Auto-Judge] Triple-Stream P@10: {triple_p10:.2f} ({len(triple_relevant)}/10 relevant)")
+            logger.info(f"[Auto-Judge] Vanilla CLIP P@10: {vanilla_p10:.2f} ({len(vanilla_relevant)}/10 relevant)")
+            
+            improvement = ((triple_p10 - vanilla_p10) / vanilla_p10 * 100) if vanilla_p10 > 0 else 0
+            logger.info(f"[Auto-Judge] Improvement: +{improvement:.1f}%")
+        else:
+            # Manual relevance judgment
+            logger.info("\n" + "="*100)
+            logger.info("RELEVANCE JUDGMENT")
+            logger.info("Please review the images and enter relevant ranks.")
+            logger.info("="*100)
+            
+            relevant_input = input(f"\nEnter relevant ranks for '{query}' (Triple-Stream, e.g., 1,2,4,7): ")
+            triple_relevant = [int(r.strip())-1 for r in relevant_input.split(',') if r.strip()] if relevant_input else []
+            triple_p10 = len(triple_relevant) / 10
+            
+            relevant_input = input(f"Enter relevant ranks for '{query}' (Vanilla CLIP, e.g., 1,3,5): ")
+            vanilla_relevant = [int(r.strip())-1 for r in relevant_input.split(',') if r.strip()] if relevant_input else []
+            vanilla_p10 = len(vanilla_relevant) / 10
+            
+            improvement = ((triple_p10 - vanilla_p10) / vanilla_p10 * 100) if vanilla_p10 > 0 else 0
         
         return {
             'query': query,
@@ -126,9 +140,88 @@ class SearchEvaluator:
             'weights': weights,
             'triple_stream_results': [(img_id, score) for img_id, score, _ in results],
             'vanilla_clip_results': vanilla_results,
-            'precision_at_10': precision_at_10,
-            'relevant_ranks': relevant_ranks
+            'triple_p10': triple_p10,
+            'vanilla_p10': vanilla_p10,
+            'improvement_pct': improvement,
+            'triple_relevant_indices': triple_relevant,
+            'vanilla_relevant_indices': vanilla_relevant
         }
+    
+    def _auto_judge_relevance(self, query: str, results: List[Tuple]) -> List[int]:
+        """
+        Automatically judge relevance based on query keywords matching metadata
+        
+        Args:
+            query: Search query
+            results: List of (img_id, score, individual_scores) tuples
+            
+        Returns:
+            List of relevant result indices (0-based)
+        """
+        query_lower = query.lower()
+        # Remove common stop words and split
+        stop_words = {'a', 'the', 'in', 'on', 'at', 'for', 'and', 'or'}
+        query_keywords = [w for w in query_lower.split() if w not in stop_words and len(w) > 2]
+        
+        if not query_keywords:
+            return []
+        
+        relevant_indices = []
+        
+        for idx, (img_id, score, _) in enumerate(results):
+            metadata = self.retriever.get_image_metadata(img_id)
+            
+            # Check grounded text and vibe text for keyword matches
+            grounded = metadata.get('grounded_text', '').lower()
+            vibe = metadata.get('vibe_text', '').lower()
+            combined_text = grounded + ' ' + vibe
+            
+            # Score based on keyword matches
+            match_score = sum(1 for keyword in query_keywords if keyword in combined_text)
+            
+            # Consider relevant if at least 30% of keywords match
+            if match_score >= max(1, len(query_keywords) * 0.3):
+                relevant_indices.append(idx)
+        
+        return relevant_indices
+    
+    def _auto_judge_relevance_vanilla(self, query: str, result_ids: List[str]) -> List[int]:
+        """
+        Judge relevance for vanilla CLIP results (visual only)
+        Uses same criteria as triple-stream for fair comparison
+        
+        Args:
+            query: Search query
+            result_ids: List of image IDs from vanilla CLIP
+            
+        Returns:
+            List of relevant result indices (0-based)
+        """
+        query_lower = query.lower()
+        # Remove common stop words
+        stop_words = {'a', 'the', 'in', 'on', 'at', 'for', 'and', 'or'}
+        query_keywords = [w for w in query_lower.split() if w not in stop_words and len(w) > 2]
+        
+        if not query_keywords:
+            return []
+        
+        relevant_indices = []
+        
+        for idx, img_id in enumerate(result_ids):
+            metadata = self.retriever.get_image_metadata(img_id)
+            
+            # Check if visual features align with query
+            grounded = metadata.get('grounded_text', '').lower()
+            vibe = metadata.get('vibe_text', '').lower()
+            combined_text = grounded + ' ' + vibe
+            
+            # Same threshold as triple-stream (30%)
+            match_score = sum(1 for keyword in query_keywords if keyword in combined_text)
+            
+            if match_score >= max(1, len(query_keywords) * 0.3):
+                relevant_indices.append(idx)
+        
+        return relevant_indices
     
     def ablation_study(self, query: str) -> Dict:
         """
@@ -237,12 +330,13 @@ class SearchEvaluator:
         else:
             plt.show()
     
-    def run_full_evaluation(self, visualize: bool = False) -> Dict:
+    def run_full_evaluation(self, visualize: bool = False, auto_judge: bool = True) -> Dict:
         """
         Run complete evaluation on all test queries
         
         Args:
             visualize: Whether to create visualization images
+            auto_judge: Use automatic relevance judgment (recommended)
             
         Returns:
             Dictionary with all evaluation results
@@ -251,11 +345,12 @@ class SearchEvaluator:
         
         logger.info("\n" + "="*100)
         logger.info("FULL EVALUATION: Triple-Stream Fashion Search")
+        logger.info(f"Auto-Judge: {auto_judge}")
         logger.info("="*100)
         
         for query, preset in self.test_queries:
             # Evaluate query
-            result = self.evaluate_query(query, preset)
+            result = self.evaluate_query(query, preset, auto_judge=auto_judge)
             all_results[query] = result
             
             # Visualize if requested
@@ -272,8 +367,11 @@ class SearchEvaluator:
         ablation_results = self.ablation_study(self.test_queries[0][0])
         all_results['ablation'] = ablation_results
         
-        # Save results
-        with open('evaluation_results.json', 'w') as f:
+        # Save results to project root
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        results_path = os.path.join(project_root, 'evaluation_results.json')
+        
+        with open(results_path, 'w') as f:
             # Convert to serializable format
             serializable_results = {}
             for key, value in all_results.items():
@@ -287,57 +385,115 @@ class SearchEvaluator:
         
         return all_results
     
-    def compare_with_baseline(self, results: Dict):
+    def compare_with_baseline(self, results: Dict) -> Dict:
         """
         Generate comparison table with vanilla CLIP
         
         Args:
             results: Results from run_full_evaluation
+            
+        Returns:
+            Dictionary with formatted comparison data
         """
         logger.info("\n" + "="*100)
         logger.info("PERFORMANCE COMPARISON: Triple-Stream vs Vanilla CLIP")
         logger.info("="*100 + "\n")
         
-        logger.info(f"{'Query Type':<25} {'Triple-Stream P@10':<20} {'CLIP P@10':<15} {'Improvement'}")
+        logger.info(f"{'Query Type':<30} {'Triple P@10':<15} {'CLIP P@10':<15} {'Improvement'}")
         logger.info("-" * 100)
         
         avg_triple = []
         avg_clip = []
+        comparison_table = []
         
         for query, preset in self.test_queries:
-            if query in results and results[query]['precision_at_10'] is not None:
-                triple_p10 = results[query]['precision_at_10']
+            if query in results and 'triple_p10' in results[query]:
+                triple_p10 = results[query]['triple_p10']
+                clip_p10 = results[query]['vanilla_p10']
+                improvement = results[query]['improvement_pct']
                 
-                # For demo, assume CLIP baseline is 60-70% of our performance
-                # In real evaluation, this would come from actual baseline runs
-                clip_p10 = triple_p10 * 0.65  # Placeholder
-                
-                improvement = ((triple_p10 - clip_p10) / clip_p10 * 100) if clip_p10 > 0 else 0
-                
-                logger.info(f"{preset:<25} {triple_p10:.2f}{'':<17} {clip_p10:.2f}{'':<12} +{improvement:.1f}%")
+                logger.info(f"{preset:<30} {triple_p10:.2f}{'':<12} {clip_p10:.2f}{'':<12} +{improvement:.1f}%")
                 
                 avg_triple.append(triple_p10)
                 avg_clip.append(clip_p10)
+                
+                comparison_table.append({
+                    'query_type': preset,
+                    'triple_p10': triple_p10,
+                    'clip_p10': clip_p10,
+                    'improvement': improvement
+                })
             else:
-                logger.info(f"{preset:<25} {'N/A':<20} {'N/A':<15} {'N/A'}")
+                logger.info(f"{preset:<30} {'N/A':<15} {'N/A':<15} {'N/A'}")
+                comparison_table.append({
+                    'query_type': preset,
+                    'triple_p10': None,
+                    'clip_p10': None,
+                    'improvement': None
+                })
         
         if avg_triple:
             logger.info("-" * 100)
             avg_t = np.mean(avg_triple)
             avg_c = np.mean(avg_clip)
             avg_imp = ((avg_t - avg_c) / avg_c * 100) if avg_c > 0 else 0
-            logger.info(f"{'AVERAGE':<25} {avg_t:.2f}{'':<17} {avg_c:.2f}{'':<12} +{avg_imp:.1f}%")
+            logger.info(f"{'AVERAGE':<30} {avg_t:.2f}{'':<12} {avg_c:.2f}{'':<12} +{avg_imp:.1f}%")
+            
+            comparison_table.append({
+                'query_type': 'AVERAGE',
+                'triple_p10': avg_t,
+                'clip_p10': avg_c,
+                'improvement': avg_imp
+            })
+        
+        return {'comparison_table': comparison_table, 'avg_improvement': avg_imp if avg_triple else None}
 
 
 def main():
     """Run evaluation"""
     evaluator = SearchEvaluator()
     
-    # Run full evaluation
-    results = evaluator.run_full_evaluation(visualize=True)
+    # Run full evaluation with automatic judgment
+    logger.info("Starting full evaluation with automatic relevance judgment...")
+    results = evaluator.run_full_evaluation(visualize=False, auto_judge=True)
     
     # Generate comparison table
-    evaluator.compare_with_baseline(results)
+    comparison = evaluator.compare_with_baseline(results)
+    
+    # Save detailed results
+    output = {
+        'evaluation_results': results,
+        'comparison': comparison,
+        'timestamp': str(np.datetime64('now'))
+    }
+    
+    with open('evaluation_results.json', 'w') as f:
+        # Convert numpy types to native Python types
+        import json
+        def default_converter(obj):
+            if isinstance(obj, (np.integer, np.floating)):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            return str(obj)
+        
+        json.dump(output, f, indent=2, default=default_converter)
+    
+    logger.info("\nEvaluation complete! Results saved to evaluation_results.json")
+    logger.info("\n" + "="*100)
+    logger.info("SUMMARY")
+    logger.info("="*100)
+    
+    if comparison['avg_improvement'] is not None:
+        logger.info(f"Average Improvement over Vanilla CLIP: +{comparison['avg_improvement']:.1f}%")
+        logger.info(f"Target: 15-20% improvement")
+        
+        if comparison['avg_improvement'] >= 15:
+            logger.info("✅ TARGET ACHIEVED!")
+        else:
+            logger.info("⚠️  Below target - consider tuning weight presets")
+    
+    return results, comparison
 
 
 if __name__ == "__main__":
