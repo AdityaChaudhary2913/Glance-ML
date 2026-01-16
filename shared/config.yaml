@@ -57,6 +57,12 @@ expansion_rules:
   red: "crimson scarlet burgundy"
   blue: "navy azure cobalt"
   white: "ivory cream off-white"
+  tie: "necktie bowtie cravat"
+  jacket: "blazer coat outerwear"
+  dress: "gown frock"
+  shirt: "blouse top"
+  pants: "trousers slacks"
+  suit: "formal business attire"
 
 # Color Extraction Configuration
 color_extraction:

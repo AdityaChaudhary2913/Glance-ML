@@ -260,11 +260,11 @@ class TripleStreamRetriever:
                     results[img_id] = {'grounded': 0.0, 'vibe': 0.0, 'visual': 0.0}
                 results[img_id]['grounded'] = float(score)
         
-        # Query vibe collection
+        # Query vibe collection (with larger n_results for better coverage)
         if 'vibe' in self.collections and beta > 0:
             vibe_results = self.collections['vibe'].query(
                 query_embeddings=[query_embedding.tolist()],
-                n_results=n_results
+                n_results=n_results * 3  # Query 3x more to ensure overlap
             )
             vibe_ids = vibe_results['ids'][0]
             vibe_distances = vibe_results['distances'][0]
@@ -275,11 +275,11 @@ class TripleStreamRetriever:
                     results[img_id] = {'grounded': 0.0, 'vibe': 0.0, 'visual': 0.0}
                 results[img_id]['vibe'] = float(score)
         
-        # Query visual collection
+        # Query visual collection (with larger n_results for better coverage)
         if 'visual' in self.collections and gamma > 0:
             visual_results = self.collections['visual'].query(
                 query_embeddings=[query_embedding.tolist()],
-                n_results=n_results
+                n_results=n_results * 3  # Query 3x more to ensure overlap with other streams
             )
             visual_ids = visual_results['ids'][0]
             visual_distances = visual_results['distances'][0]
@@ -289,6 +289,27 @@ class TripleStreamRetriever:
                 if img_id not in results:
                     results[img_id] = {'grounded': 0.0, 'vibe': 0.0, 'visual': 0.0}
                 results[img_id]['visual'] = float(score)
+        
+        # Fill missing visual scores for images not in visual top-K
+        if 'visual' in self.collections and gamma > 0:
+            missing_visual_ids = [img_id for img_id, scores in results.items() if scores['visual'] == 0.0]
+            if missing_visual_ids:
+                # Query visual collection for these specific images
+                try:
+                    visual_fill_results = self.collections['visual'].query(
+                        query_embeddings=[query_embedding.tolist()],
+                        n_results=len(missing_visual_ids),
+                        where={"image_id": {"$in": missing_visual_ids}}
+                    )
+                    if visual_fill_results['ids'][0]:
+                        fill_ids = visual_fill_results['ids'][0]
+                        fill_distances = visual_fill_results['distances'][0]
+                        fill_scores = self.normalize_scores(fill_distances, method=score_method)
+                        for img_id, score in zip(fill_ids, fill_scores):
+                            if img_id in results:
+                                results[img_id]['visual'] = float(score)
+                except Exception as e:
+                    logger.debug(f"Could not fill missing visual scores: {e}")
         
         # Compute final weighted scores
         final_results = []
