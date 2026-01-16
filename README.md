@@ -2,6 +2,10 @@
 
 A sophisticated fashion image retrieval system that understands **what** someone is wearing, **where** they are, and the **vibe** of their attire using a novel triple-stream architecture.
 
+> **📦 Pre-indexed Database Available**: If you need the indexed `chroma_db/`, `logs/`, and `outputs/` folders, download them from [Google Drive](https://drive.google.com/drive/folders/1KzYAc0MjlBHCEsXJP3L_8I_QdKsrTURa?usp=sharing).
+
+> **🎥 Demo Video**: Watch the Web UI in action at [Google Drive](https://drive.google.com/file/d/1OnA6LFqLni2XDpjmIwVKiXBlMu7tDq45/view?usp=sharing).
+
 ## 🌐 Interactive Web Demo
 
 **Try the Streamlit web interface for interviews and demonstrations:**
