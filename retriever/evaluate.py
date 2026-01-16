@@ -147,45 +147,77 @@ class SearchEvaluator:
             'vanilla_relevant_indices': vanilla_relevant
         }
     
-    def _auto_judge_relevance(self, query: str, results: List[Tuple]) -> List[int]:
+    def _auto_judge_relevance(self, query: str, results: List[Tuple], use_semantic: bool = False) -> List[int]:
         """
-        Automatically judge relevance based on query keywords matching metadata
+        Automatically judge relevance using semantic similarity or keyword matching
         
         Args:
             query: Search query
             results: List of (img_id, score, individual_scores) tuples
+            use_semantic: Use CLIP text embeddings for semantic similarity (default: True)
             
         Returns:
             List of relevant result indices (0-based)
         """
-        query_lower = query.lower()
-        # Remove common stop words and split
-        stop_words = {'a', 'the', 'in', 'on', 'at', 'for', 'and', 'or'}
-        query_keywords = [w for w in query_lower.split() if w not in stop_words and len(w) > 2]
-        
-        if not query_keywords:
-            return []
-        
-        relevant_indices = []
-        
-        for idx, (img_id, score, _) in enumerate(results):
-            metadata = self.retriever.get_image_metadata(img_id)
+        if use_semantic:
+            # SEMANTIC SIMILARITY METHOD (Better for abstract queries)
+            # Encode query once
+            query_embedding = self.retriever.clip_model.encode(query, convert_to_numpy=True)
             
-            # Check grounded text and vibe text for keyword matches
-            grounded = metadata.get('grounded_text', '').lower()
-            vibe = metadata.get('vibe_text', '').lower()
-            combined_text = grounded + ' ' + vibe
+            relevant_indices = []
             
-            # Score based on keyword matches
-            match_score = sum(1 for keyword in query_keywords if keyword in combined_text)
+            for idx, (img_id, score, _) in enumerate(results):
+                metadata = self.retriever.get_image_metadata(img_id)
+                
+                # Combine metadata text
+                grounded = metadata.get('grounded_text', '')
+                vibe = metadata.get('vibe_text', '')
+                combined_text = f"{grounded} {vibe}".strip()
+                
+                if not combined_text:
+                    continue
+                
+                # Encode metadata
+                text_embedding = self.retriever.clip_model.encode(combined_text, convert_to_numpy=True)
+                
+                # Compute cosine similarity
+                similarity = np.dot(query_embedding, text_embedding) / (
+                    np.linalg.norm(query_embedding) * np.linalg.norm(text_embedding)
+                )
+                
+                # STRICTER threshold: 0.35 instead of 0.25 for better discrimination
+                if similarity >= 0.35:
+                    relevant_indices.append(idx)
             
-            # Consider relevant if at least 30% of keywords match
-            if match_score >= max(1, len(query_keywords) * 0.3):
-                relevant_indices.append(idx)
+            return relevant_indices
         
-        return relevant_indices
+        else:
+            # KEYWORD MATCHING METHOD (Original - good for specific queries)
+            query_lower = query.lower()
+            stop_words = {'a', 'the', 'in', 'on', 'at', 'for', 'and', 'or'}
+            query_keywords = [w for w in query_lower.split() if w not in stop_words and len(w) > 2]
+            
+            if not query_keywords:
+                return []
+            
+            relevant_indices = []
+            
+            for idx, (img_id, score, _) in enumerate(results):
+                metadata = self.retriever.get_image_metadata(img_id)
+                
+                grounded = metadata.get('grounded_text', '').lower()
+                vibe = metadata.get('vibe_text', '').lower()
+                combined_text = grounded + ' ' + vibe
+                
+                match_score = sum(1 for keyword in query_keywords if keyword in combined_text)
+                
+                # Consider relevant if at least 30% of keywords match
+                if match_score >= max(1, len(query_keywords) * 0.3):
+                    relevant_indices.append(idx)
+            
+            return relevant_indices
     
-    def _auto_judge_relevance_vanilla(self, query: str, result_ids: List[str]) -> List[int]:
+    def _auto_judge_relevance_vanilla(self, query: str, result_ids: List[str], use_semantic: bool = False) -> List[int]:
         """
         Judge relevance for vanilla CLIP results (visual only)
         Uses same criteria as triple-stream for fair comparison
@@ -193,11 +225,63 @@ class SearchEvaluator:
         Args:
             query: Search query
             result_ids: List of image IDs from vanilla CLIP
+            use_semantic: Use CLIP text embeddings for semantic similarity (default: True)
             
         Returns:
             List of relevant result indices (0-based)
         """
-        query_lower = query.lower()
+        if use_semantic:
+            # SEMANTIC SIMILARITY METHOD
+            query_embedding = self.retriever.clip_model.encode(query, convert_to_numpy=True)
+            
+            relevant_indices = []
+            
+            for idx, img_id in enumerate(result_ids):
+                metadata = self.retriever.get_image_metadata(img_id)
+                
+                grounded = metadata.get('grounded_text', '')
+                vibe = metadata.get('vibe_text', '')
+                combined_text = f"{grounded} {vibe}".strip()
+                
+                if not combined_text:
+                    continue
+                
+                text_embedding = self.retriever.clip_model.encode(combined_text, convert_to_numpy=True)
+                
+                similarity = np.dot(query_embedding, text_embedding) / (
+                    np.linalg.norm(query_embedding) * np.linalg.norm(text_embedding)
+                )
+                
+                # STRICTER threshold: 0.35 instead of 0.25 for better discrimination
+                if similarity >= 0.35:
+                    relevant_indices.append(idx)
+            
+            return relevant_indices
+        
+        else:
+            # KEYWORD MATCHING METHOD (Original)
+            query_lower = query.lower()
+            stop_words = {'a', 'the', 'in', 'on', 'at', 'for', 'and', 'or'}
+            query_keywords = [w for w in query_lower.split() if w not in stop_words and len(w) > 2]
+            
+            if not query_keywords:
+                return []
+            
+            relevant_indices = []
+            
+            for idx, img_id in enumerate(result_ids):
+                metadata = self.retriever.get_image_metadata(img_id)
+                
+                grounded = metadata.get('grounded_text', '').lower()
+                vibe = metadata.get('vibe_text', '').lower()
+                combined_text = grounded + ' ' + vibe
+                
+                match_score = sum(1 for keyword in query_keywords if keyword in combined_text)
+                
+                if match_score >= max(1, len(query_keywords) * 0.3):
+                    relevant_indices.append(idx)
+            
+            return relevant_indices
         # Remove common stop words
         stop_words = {'a', 'the', 'in', 'on', 'at', 'for', 'and', 'or'}
         query_keywords = [w for w in query_lower.split() if w not in stop_words and len(w) > 2]

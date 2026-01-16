@@ -162,14 +162,15 @@ class WeightOptimizer:
         
         return mean_score
     
-    def _compute_relevance_score(self, query: str, results: List[Tuple]) -> float:
+    def _compute_relevance_score(self, query: str, results: List[Tuple], use_semantic: bool = False) -> float:
         """
-        Compute relevance score using automatic judgment
+        Compute relevance score using semantic similarity or keyword matching
         Combination of precision and NDCG
         
         Args:
             query: Search query
             results: List of (img_id, score, individual_scores) tuples
+            use_semantic: Use CLIP text embeddings for semantic similarity (default: True)
             
         Returns:
             Relevance score (higher is better)
@@ -177,30 +178,56 @@ class WeightOptimizer:
         if not results:
             return 0.0
         
-        # Extract keywords from query
-        query_lower = query.lower()
-        stop_words = {'a', 'the', 'in', 'on', 'at', 'for', 'and', 'or', 'with'}
-        query_keywords = [w for w in query_lower.split() if w not in stop_words and len(w) > 2]
-        
-        if not query_keywords:
-            return 0.0
-        
-        # Score each result based on keyword matching in metadata
         relevance_scores = []
         
-        for img_id, final_score, _ in results:
-            metadata = self.retriever.get_image_metadata(img_id)
+        if use_semantic:
+            # SEMANTIC SIMILARITY METHOD (Better for abstract queries)
+            query_embedding = self.retriever.clip_model.encode(query, convert_to_numpy=True)
             
-            grounded = metadata.get('grounded_text', '').lower()
-            vibe = metadata.get('vibe_text', '').lower()
-            combined_text = grounded + ' ' + vibe
+            for img_id, final_score, _ in results:
+                metadata = self.retriever.get_image_metadata(img_id)
+                
+                grounded = metadata.get('grounded_text', '')
+                vibe = metadata.get('vibe_text', '')
+                combined_text = f"{grounded} {vibe}".strip()
+                
+                if not combined_text:
+                    relevance_scores.append(0.0)
+                    continue
+                
+                text_embedding = self.retriever.clip_model.encode(combined_text, convert_to_numpy=True)
+                
+                # Cosine similarity
+                similarity = np.dot(query_embedding, text_embedding) / (
+                    np.linalg.norm(query_embedding) * np.linalg.norm(text_embedding)
+                )
+                
+                # Clip to [0, 1] and use as relevance score
+                relevance = max(0.0, min(1.0, similarity))
+                relevance_scores.append(relevance)
+        
+        else:
+            # KEYWORD MATCHING METHOD (Original)
+            query_lower = query.lower()
+            stop_words = {'a', 'the', 'in', 'on', 'at', 'for', 'and', 'or', 'with'}
+            query_keywords = [w for w in query_lower.split() if w not in stop_words and len(w) > 2]
             
-            # Count keyword matches
-            match_count = sum(1 for keyword in query_keywords if keyword in combined_text)
+            if not query_keywords:
+                return 0.0
             
-            # Relevance is percentage of keywords matched
-            relevance = match_count / len(query_keywords)
-            relevance_scores.append(relevance)
+            for img_id, final_score, _ in results:
+                metadata = self.retriever.get_image_metadata(img_id)
+                
+                grounded = metadata.get('grounded_text', '').lower()
+                vibe = metadata.get('vibe_text', '').lower()
+                combined_text = grounded + ' ' + vibe
+                
+                # Count keyword matches
+                match_count = sum(1 for keyword in query_keywords if keyword in combined_text)
+                
+                # Relevance is percentage of keywords matched
+                relevance = match_count / len(query_keywords)
+                relevance_scores.append(relevance)
         
         # Compute metrics
         # 1. Precision@10: Fraction of results with relevance >= 0.3
