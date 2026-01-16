@@ -20,32 +20,38 @@ chromadb:
     vibe: "vibe_vectors"
     visual: "visual_vectors"
 
-# Query Weight Presets
+# Query Weight Presets (OPTIMIZED via Bayesian Optimization - 2026-01-16)
+# Original hardcoded weights kept in comments for reference
 weight_presets:
   attribute_specific:  # "bright yellow raincoat"
-    alpha: 0.4  # Grounded (attributes)
-    beta: 0.1   # Vibe (minimal)
-    gamma: 0.5  # Visual (color!)
+    alpha: 0.008  # Grounded (OPTIMIZED: was 0.4)
+    beta: 0.660   # Vibe (OPTIMIZED: was 0.1) - Surprisingly dominant!
+    gamma: 0.331  # Visual (OPTIMIZED: was 0.5)
+    # Optimization score: 0.8238 - Excellent performance
     
   contextual_place:  # "modern office attire"
-    alpha: 0.3
-    beta: 0.6  # Vibe (scene dominates)
-    gamma: 0.1
+    alpha: 0.217  # Grounded (OPTIMIZED: was 0.3)
+    beta: 0.266   # Vibe (OPTIMIZED: was 0.6) - Reduced importance
+    gamma: 0.517  # Visual (OPTIMIZED: was 0.1) - Much more important!
+    # Optimization score: 0.2133 - May need more tuning
     
   complex_semantic:  # "blue shirt on park bench"
-    alpha: 0.3
-    beta: 0.5  # Vibe (scene + action)
-    gamma: 0.2
+    alpha: 0.467  # Grounded (OPTIMIZED: was 0.3) - More important!
+    beta: 0.237   # Vibe (OPTIMIZED: was 0.5)
+    gamma: 0.296  # Visual (OPTIMIZED: was 0.2)
+    # Optimization score: 0.5122 - Good balance
     
   style_inference:  # "casual weekend city walk"
-    alpha: 0.2
-    beta: 0.7  # Vibe (pure style)
-    gamma: 0.1
+    alpha: 0.446  # Grounded (OPTIMIZED: was 0.2) - Much more important!
+    beta: 0.514   # Vibe (OPTIMIZED: was 0.7)
+    gamma: 0.040  # Visual (OPTIMIZED: was 0.1) - Minimal
+    # Optimization score: 0.3269 - Moderate performance
     
   compositional:  # "red tie + white shirt + formal"
-    alpha: 0.4
-    beta: 0.1
-    gamma: 0.5  # Visual (color composition)
+    alpha: 0.038  # Grounded (OPTIMIZED: was 0.4)
+    beta: 0.568   # Vibe (OPTIMIZED: was 0.1) - Highly important!
+    gamma: 0.394  # Visual (OPTIMIZED: was 0.5)
+    # Optimization score: 0.9228 - BEST PERFORMING!
 
 # Query Expansion Rules
 expansion_rules:
@@ -88,3 +94,52 @@ indexing:
 retrieval:
   top_k: 10
   query_n_results: 50  # Number of results to fetch per collection
+
+# Optimized Weights (Bayesian Optimization Results)
+# Generated: 2026-01-16 15:22:04
+# Method: Optuna TPE sampler with 50 global trials, 30 per-preset trials
+# Test queries: 15 diverse queries across all categories
+# Metrics: 0.4×P@10 + 0.4×NDCG@10 + 0.2×MRR
+optimized_weights:
+  global:
+    alpha: 0.008   # Grounded layer
+    beta: 0.660    # Vibe layer (dominant)
+    gamma: 0.331   # Visual layer
+    score: 0.5514  # Mean combined score across all queries
+    n_trials: 50
+  
+  presets:
+    attribute_specific:
+      alpha: 0.008
+      beta: 0.660
+      gamma: 0.331
+      score: 0.8238
+      n_trials: 30
+    
+    contextual_place:
+      alpha: 0.217
+      beta: 0.266
+      gamma: 0.517
+      score: 0.2133
+      n_trials: 30
+    
+    complex_semantic:
+      alpha: 0.467
+      beta: 0.237
+      gamma: 0.296
+      score: 0.5122
+      n_trials: 30
+    
+    style_inference:
+      alpha: 0.446
+      beta: 0.514
+      gamma: 0.040
+      score: 0.3269
+      n_trials: 30
+    
+    compositional:
+      alpha: 0.038
+      beta: 0.568
+      gamma: 0.394
+      score: 0.9228  # BEST PERFORMANCE
+      n_trials: 30
