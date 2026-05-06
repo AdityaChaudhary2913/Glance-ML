@@ -20,8 +20,8 @@ A sophisticated fashion image retrieval system that understands **what** someone
 ### Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/AdityaChaudhary2913/Glance-ML-Internship-Assignment.git
-cd Glance-ML-Internship-Assignment
+git clone https://github.com/AdityaChaudhary2913/Glance-ML.git
+cd Glance-ML
 ```
 
 ### Step 2: Install Dependencies
@@ -340,13 +340,13 @@ See [retriever/optimize_weights.py](retriever/optimize_weights.py) for details o
 
 **Actual measured times from logs (2026-01-16):**
 
-| Stage | Time | Status |
-|-------|------|--------|
-| Grounded Layer Generation (STEP 1) | **249 min (4h 9m)** |
-| Vibe Caption Generation - BLIP-2 (STEP 2) | **199 min (3h 19m)** |
-| Vector Encoding + ChromaDB Indexing | **17 min** |
-| **Total Indexing Time** | **465 min (7.75 hours)** |
-| **Collections Created** | **3 × 45,623 vectors** |
+| Stage | Time |
+|-------|------|
+| Grounded Layer Generation (STEP 1) | **249 min (4h 9m)**
+| Vibe Caption Generation - BLIP-2 (STEP 2) | **199 min (3h 19m)**
+| Vector Encoding + ChromaDB Indexing | **17 min**
+| **Total Indexing Time** | **465 min (7.75 hours)**
+| **Collections Created** | **3 × 45,623 vectors**
 
 **Notes:**
 - Grounded layer: 45,623 images @ **3.05 images/sec** (Fashionpedia parsing + color extraction)
